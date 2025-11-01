@@ -1,4 +1,6 @@
 from fastapi import APIRouter
+from app.db.session import get_db 
+from app.services.sql_lite_service import get_entity_count
 
 router = APIRouter()
 
@@ -9,3 +11,9 @@ async def hello():
 @router.get("/api/health")
 async def health():
     return {"status": "ok", "service": "Fashia Backend API"}
+
+
+@router.get("/entities/count")
+def read_entity_count():
+    count = get_entity_count()
+    return {"count": count}

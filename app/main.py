@@ -20,11 +20,3 @@ app.add_middleware(
 
 # Include routers
 app.include_router(router)
-
-@app.get("/")
-async def root():
-    return {"message": "Welcome to Fashia Backend API"}
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
