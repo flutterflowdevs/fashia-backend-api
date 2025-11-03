@@ -17,3 +17,7 @@ async def health():
 def read_entity_count():
     count = get_entity_count()
     return {"count": count}
+
+@router.get("/hello/dev")
+def read_entity_count():
+    return "Hello from Fashia Development!"
