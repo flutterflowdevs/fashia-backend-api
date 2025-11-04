@@ -4,6 +4,10 @@ from app.services.sql_lite_service import get_entity_count
 
 router = APIRouter()
 
+@router.get("/")
+async def root():
+    return {"status": "ok", "message": "Fashia Backend API"}
+
 @router.get("/api/hello")
 async def hello():
     return {"message": "Hello from Fashia API!"}
