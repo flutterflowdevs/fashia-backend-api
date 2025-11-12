@@ -1,6 +1,6 @@
 import sqlite3
 import app.db.db_query as db_query
-DB_FOLDER_PATH="/Users/flutterflowdevs/Desktop/continue_execution/fashia-data-importer-oct-11-mac-final"
+DB_FOLDER_PATH="/mnt/efs/fashia-db"
 DATABASE_PATH = DB_FOLDER_PATH+"/facilities.db"
 
 def get_db():
