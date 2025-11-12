@@ -27,7 +27,7 @@ def get_entity_table_count():
 async def get_db_connection():
     """Async context manager for SQLite connection."""
     conn = await aiosqlite.connect(DATABASE_PATH)
-    # await conn.execute('PRAGMA journal_mode=WAL')  
+    await conn.execute('PRAGMA journal_mode=WAL')  
     conn.row_factory = aiosqlite.Row
     try:
         yield conn
