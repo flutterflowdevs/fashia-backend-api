@@ -1,6 +1,9 @@
 import sqlite3
 import app.db.db_query as db_query
-DB_FOLDER_PATH="/Users/flutterflowdevs/Desktop/continue_execution/fashia-data-importer-oct-11-mac-final"
+import aiosqlite
+from contextlib import asynccontextmanager
+
+DB_FOLDER_PATH="/Users/tester/Downloads"
 DATABASE_PATH = DB_FOLDER_PATH+"/facilities.db"
 
 def get_db():
@@ -19,3 +22,14 @@ def get_entity_table_count():
 
     conn.close()
     return count
+
+@asynccontextmanager
+async def get_db_connection():
+    """Async context manager for SQLite connection."""
+    conn = await aiosqlite.connect(DATABASE_PATH)
+    await conn.execute('PRAGMA journal_mode=WAL')  
+    conn.row_factory = aiosqlite.Row
+    try:
+        yield conn
+    finally:
+        await conn.close()

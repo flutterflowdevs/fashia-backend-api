@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-from app.db.session import get_db 
-from app.services.sql_lite_service import get_entity_count
+from app.services.get_facilities_data import get_facilities_data
+from app.models.facility_request import FacilityFilterRequest
 
 router = APIRouter()
 
@@ -16,12 +16,34 @@ async def hello():
 async def health():
     return {"status": "ok", "service": "Fashia Backend API"}
 
-
-@router.get("/entities/count")
-def read_entity_count():
-    count = get_entity_count()
-    return {"count": count}
-
-@router.get("/hello/dev")
-def read_entity_count():
-    return "Hello from Fashia Development!"
+@router.post("/entities")
+async def get_entities(request: FacilityFilterRequest):
+    """POST endpoint to filter and retrieve entities"""
+    # Debug: Print the received request data
+    print(f"Received request: {request.dict()}")
+    
+    try:
+        result = await get_facilities_data(
+            name=request.name,
+            cities=request.city,
+            states=request.state,
+            address=request.address,
+            zipcode=request.zipcode,
+            types=request.type,
+            subtypes=request.subtype,
+            roles=request.roles,
+            specialties=request.specialties,
+            employers=request.employers,
+            page=request.page,
+            per_page=request.per_page,
+            sort_by=request.sort_by,
+            sort_order=request.sort_order,
+            provider_first_name=request.provider_first_name,
+            provider_last_name=request.provider_last_name,
+            coords=request.coords
+        )
+        return result
+    except Exception as e:
+        print(f"Error in controller: {str(e)}")
+        print(f"Error type: {type(e)}")
+        raise
