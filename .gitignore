@@ -207,3 +207,9 @@ marimo/_lsp/
 __marimo__/
 .DS_Store
 *__pycache__/*
+._sql_index.sql
+._.venv
+*.___pycache__
+*._*.py
+*._*.txt
+._.gitignore
