@@ -1,8 +1,10 @@
+
+
 from typing import List, Optional
 from fastapi import HTTPException
 from app.db.session import get_db_connection
 from app.models.facility_model import FacilityResponse, PaginatedEntityResponse
-
+import asyncio
 import json
 
 def to_title_case(text: str) -> str:
@@ -10,6 +12,16 @@ def to_title_case(text: str) -> str:
     if not text:
         return text
     return text.title()
+
+async def execute_subquery(conn, query: str, params: List, field_name: str):
+    """Execute a subquery and return the result with field name"""
+    try:
+        cursor = await conn.execute(query, params)
+        result = await cursor.fetchone()
+        return field_name, result[0] if result else None
+    except Exception as e:
+        print(f"Error in subquery for {field_name}: {e}")
+        return field_name, None
 
 async def get_facilities_data(
     name: Optional[str] = "",
@@ -55,6 +67,10 @@ async def get_facilities_data(
     
     try:
         async with get_db_connection() as conn:
+            # Set query optimizations
+            await conn.execute("PRAGMA temp_store = MEMORY")
+            await conn.execute("PRAGMA cache_size = -64000")
+            
             # Build base filters
             entity_params = []
             filters = ["e.is_employer = 0"]
@@ -119,13 +135,13 @@ async def get_facilities_data(
             provider_params = []
             
             if provider_first_name and provider_last_name:
-                provider_conditions.append("(LOWER(p.first_name) = LOWER(?) AND LOWER(p.last_name) = LOWER(?))")
+                provider_conditions.append("(LOWER(pe.first_name) = LOWER(?) AND LOWER(pe.last_name) = LOWER(?))")
                 provider_params.extend([provider_first_name, provider_last_name])
             elif provider_first_name:
-                provider_conditions.append("LOWER(p.first_name) = LOWER(?)")
+                provider_conditions.append("LOWER(pe.first_name) = LOWER(?)")
                 provider_params.append(provider_first_name)
             elif provider_last_name:
-                provider_conditions.append("LOWER(p.last_name) = LOWER(?)")
+                provider_conditions.append("LOWER(pe.last_name) = LOWER(?)")
                 provider_params.append(provider_last_name)
             
             # Build COMBINED filter for roles, specialties, and provider_count subqueries
@@ -151,11 +167,43 @@ async def get_facilities_data(
             
             # Combined WHERE clause for roles, specialties, and provider_count subqueries
             combined_where_clause = " AND ".join(combined_conditions) if combined_conditions else "1=1"
+
+            # FIX: Create separate provider conditions for employer subquery
+            employer_provider_conditions = []
+            employer_provider_params = []
             
-            # For employer subquery, use the combined filter PLUS employer name filter
-            employer_combined_conditions = combined_conditions.copy()
-            employer_combined_params = combined_params.copy()
+            if provider_first_name and provider_last_name:
+                employer_provider_conditions.append("(LOWER(pfel_provider.first_name) = LOWER(?) AND LOWER(pfel_provider.last_name) = LOWER(?))")
+                employer_provider_params.extend([provider_first_name, provider_last_name])
+            elif provider_first_name:
+                employer_provider_conditions.append("LOWER(pfel_provider.first_name) = LOWER(?)")
+                employer_provider_params.append(provider_first_name)
+            elif provider_last_name:
+                employer_provider_conditions.append("LOWER(pfel_provider.last_name) = LOWER(?)")
+                employer_provider_params.append(provider_last_name)
             
+            # Build employer combined conditions
+            employer_combined_conditions = []
+            employer_combined_params = []
+            
+            # Add provider name conditions for employer subquery
+            if employer_provider_conditions:
+                employer_combined_conditions.extend(employer_provider_conditions)
+                employer_combined_params.extend(employer_provider_params)
+            
+            # Add role conditions for employer subquery
+            if roles:
+                for role in roles:
+                    employer_combined_conditions.append("LOWER(emp_rsc.role) = LOWER(?)")
+                    employer_combined_params.append(role)
+            
+            # Add specialty conditions for employer subquery
+            if specialties:
+                for specialty in specialties:
+                    employer_combined_conditions.append("LOWER(emp_rsc.specialty) = LOWER(?)")
+                    employer_combined_params.append(specialty)
+            
+            # Add employer name conditions
             if employers:
                 emp_conditions = []
                 for employer in employers:
@@ -170,8 +218,7 @@ async def get_facilities_data(
                 combined_where = " AND ".join(combined_conditions)
                 filters.append(f"""EXISTS (
                     SELECT 1 FROM provider_entities pe
-                    INNER JOIN providers p ON p.npi = pe.provider_id
-                    INNER JOIN provider_taxonomies pt ON pt.npi = p.npi
+                    INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
                     INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
                     WHERE pe.npi_or_ccn = e.ccn_or_npi
                     AND ({combined_where})
@@ -179,13 +226,13 @@ async def get_facilities_data(
                 entity_params.extend(combined_params)
             
             # Employer filters
-            if employers:
+            if employers or provider_conditions:
                 filters.append(f"""EXISTS (
                     SELECT 1 FROM provider_facility_employer_linked pfel
                     INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
-                    INNER JOIN providers p ON p.npi = pfel.provider_id
-                    INNER JOIN provider_taxonomies pt ON pt.npi = p.npi
-                    INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                    INNER JOIN provider_entities pfel_provider ON pfel_provider.provider_id = pfel.provider_id
+                    INNER JOIN provider_taxonomies emp_pt ON emp_pt.npi = pfel.provider_id
+                    INNER JOIN roles_specialties_classification emp_rsc ON emp_rsc.nucc_code = emp_pt.nucc_code
                     WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
                     AND ({employer_where_clause})
                 )""")
@@ -214,7 +261,6 @@ async def get_facilities_data(
                 )
 
             # Step 2: Build the main query WITHOUT parameterized subqueries
-            # Instead, we'll use the actual values in the query to avoid parameter conflicts
             offset = (page - 1) * per_page
             
             # Build consistent ordering for display in JSON arrays
@@ -253,29 +299,13 @@ async def get_facilities_data(
             actual_employer_where = build_actual_where_clause(employer_where_clause, employer_combined_params)
 
             # Define sorting expressions for fields that can be null/empty
-            # Create a single CTE-style approach for the sorting expressions
-            # Base query for provider-employer joins
-            provider_employer_base_query = f"""
+            role_specialty_base_query = f"""
+                SELECT rsc.role, rsc.specialty
                 FROM provider_entities pe
-                JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
-                JOIN roles_specialties_classification rs ON rs.nucc_code = pt.nucc_code
+                INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
                 WHERE pe.npi_or_ccn = e.ccn_or_npi
                 AND {actual_combined_where}
-            """
-
-            # Base query for employer joins  
-            employer_base_query = f"""
-                FROM provider_facility_employer_linked pfel
-                JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
-                JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
-                JOIN roles_specialties_classification rs ON rs.nucc_code = pt.nucc_code
-                WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
-                AND {actual_employer_where}
-            """
-
-            role_specialty_base_query = f"""
-                SELECT rs.role, rs.specialty
-                {provider_employer_base_query}
             """
 
             nulls_last_expr = {
@@ -286,12 +316,26 @@ async def get_facilities_data(
                     (SELECT specialty FROM ({role_specialty_base_query} ORDER BY specialty {sort_order} LIMIT 1))
                 """,
                 "employer": f"""
-                    (SELECT emp.name {employer_base_query} ORDER BY emp.name {sort_order} LIMIT 1)
+                    (SELECT emp.name 
+                     FROM provider_facility_employer_linked pfel
+                     INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                     INNER JOIN provider_entities pfel_provider ON pfel_provider.provider_id = pfel.provider_id
+                     INNER JOIN provider_taxonomies emp_pt ON emp_pt.npi = pfel.provider_id
+                     INNER JOIN roles_specialties_classification emp_rsc ON emp_rsc.nucc_code = emp_pt.nucc_code
+                     WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
+                     AND {actual_employer_where}
+                     ORDER BY emp.name {sort_order} LIMIT 1)
                 """,
                 "provider_count": f"""
-                    (SELECT COUNT(DISTINCT pe.provider_id) {provider_employer_base_query})
+                    (SELECT COUNT(DISTINCT pe.provider_id) 
+                     FROM provider_entities pe
+                     INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                     INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                     WHERE pe.npi_or_ccn = e.ccn_or_npi
+                     AND {actual_combined_where})
                 """
             }
+
             # Build order by clause
             if sort_by in nulls_last_expr:
                 order_by_clause = f"""
@@ -311,7 +355,7 @@ async def get_facilities_data(
                 field = simple_field_map.get(sort_by, "e.name")
                 order_by_clause = f"{field} {sort_order}"
 
-            # Main query with actual values instead of parameter placeholders in subqueries
+            # OPTIMIZED: Main query without subqueries - we'll fetch subquery data in parallel
             main_query = f"""
                 SELECT
                     e.name,
@@ -324,56 +368,7 @@ async def get_facilities_data(
                     s.state_name AS state,
                     s.state_code AS state_code,
                     e.latitude,
-                    e.longitude,
-                    (
-                        SELECT COUNT(DISTINCT pe.provider_id)
-                        FROM provider_entities pe
-                        INNER JOIN providers p ON p.npi = pe.provider_id
-                        INNER JOIN provider_taxonomies pt ON pt.npi = p.npi
-                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
-                        WHERE pe.npi_or_ccn = e.ccn_or_npi
-                        AND {actual_combined_where}
-                    ) AS providers_count,
-                    (
-                        SELECT json_group_array(json_object('name', emp.name, 'ccn_or_npi', emp.ccn_or_npi))
-                        FROM (
-                            SELECT DISTINCT emp.name, emp.ccn_or_npi
-                            FROM provider_facility_employer_linked pfel
-                            INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
-                            INNER JOIN providers p ON p.npi = pfel.provider_id
-                            INNER JOIN provider_taxonomies pt ON pt.npi = p.npi
-                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
-                            WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
-                            AND {actual_employer_where}
-                            {employer_display_order}
-                        ) emp
-                    ) AS employers,
-                    (
-                        SELECT json_group_array(role)
-                        FROM (
-                            SELECT DISTINCT rsc.role
-                            FROM provider_entities pe
-                            INNER JOIN providers p ON p.npi = pe.provider_id
-                            INNER JOIN provider_taxonomies pt ON pt.npi = p.npi
-                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
-                            WHERE pe.npi_or_ccn = e.ccn_or_npi
-                            AND {actual_combined_where}
-                            {role_display_order}
-                        )
-                    ) AS roles,
-                    (
-                        SELECT json_group_array(specialty)
-                        FROM (
-                            SELECT DISTINCT rsc.specialty
-                            FROM provider_entities pe
-                            INNER JOIN providers p ON p.npi = pe.provider_id
-                            INNER JOIN provider_taxonomies pt ON pt.npi = p.npi
-                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
-                            WHERE pe.npi_or_ccn = e.ccn_or_npi
-                            AND {actual_combined_where}
-                            {specialty_display_order}
-                        )
-                    ) AS specialties
+                    e.longitude
                 FROM entities_enriched e
                 LEFT JOIN states s ON s.state_id = e.state_id
                 {where_clause}
@@ -384,16 +379,16 @@ async def get_facilities_data(
             # Only pass the main entity parameters + pagination
             all_params = entity_params + [per_page, offset]
             
-            # Debug info
-            print(f"Main query parameters: {len(all_params)}")
-            print(f"Entity params: {entity_params}")
-            print(f"Address search: '{address}'")
-            
+            # Execute main query
+            start_time = asyncio.get_event_loop().time()
             cursor = await conn.execute(main_query, all_params)
             rows = await cursor.fetchall()
+            main_query_time = asyncio.get_event_loop().time() - start_time
+            
+            print(f"Main query executed in {main_query_time:.2f}s, found {len(rows)} rows")
 
-            # Convert rows to EntityResponse objects
-            entities = []
+            # Convert rows to basic entities
+            basic_entities = []
             for row in rows:
                 row_dict = dict(row)
                 if row_dict.get('name'):
@@ -402,17 +397,111 @@ async def get_facilities_data(
                     row_dict['city'] = to_title_case(row_dict['city'])    
                 if row_dict.get('address'):
                     row_dict['address'] = to_title_case(row_dict['address'])
-                employers_data = json.loads(row_dict['employers'] if row_dict['employers'] else '[]')
-                for employer in employers_data:
-                    if employer.get('name'):
-                        employer['name'] = to_title_case(employer['name'])
-                row_dict["employers"] = employers_data
-                row_dict['roles'] = json.loads(row_dict['roles'] if row_dict['roles'] else '[]')
-                row_dict['specialties'] = json.loads(row_dict['specialties'] if row_dict['specialties'] else '[]')
+                basic_entities.append(row_dict)
+
+            # OPTIMIZATION: Execute subqueries in parallel for each facility
+            entities = []
+            for entity in basic_entities:
+                ccn_or_npi = entity['ccn_or_npi']
                 
-                entities.append(FacilityResponse(**row_dict))
+                # Define subqueries to run in parallel
+                subqueries = [
+                    # Providers count
+                    (
+                        f"""
+                        SELECT COUNT(DISTINCT pe.provider_id)
+                        FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = ?
+                        AND {actual_combined_where}
+                        """,
+                        [ccn_or_npi],
+                        "providers_count"
+                    ),
+                    # Employers
+                    (
+                        f"""
+                        SELECT json_group_array(json_object('name', emp.name, 'ccn_or_npi', emp.ccn_or_npi))
+                        FROM (
+                            SELECT DISTINCT emp.name, emp.ccn_or_npi
+                            FROM provider_facility_employer_linked pfel
+                            INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                            INNER JOIN provider_entities pfel_provider ON pfel_provider.provider_id = pfel.provider_id
+                            INNER JOIN provider_taxonomies emp_pt ON emp_pt.npi = pfel.provider_id
+                            INNER JOIN roles_specialties_classification emp_rsc ON emp_rsc.nucc_code = emp_pt.nucc_code
+                            WHERE pfel.facility_npi_or_ccn = ?
+                            AND {actual_employer_where}
+                            {employer_display_order}
+                        ) emp
+                        """,
+                        [ccn_or_npi],
+                        "employers"
+                    ),
+                    # Roles
+                    (
+                        f"""
+                        SELECT json_group_array(COALESCE(role, ''))
+                        FROM (
+                            SELECT DISTINCT rsc.role
+                            FROM provider_entities pe
+                            INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                            WHERE pe.npi_or_ccn = ?
+                            AND {actual_combined_where}
+                            {role_display_order}
+                        )
+                        """,
+                        [ccn_or_npi],
+                        "roles"
+                    ),
+                    # Specialties
+                    (
+                        f"""
+                        SELECT json_group_array(COALESCE(specialty, ''))
+                        FROM (
+                            SELECT DISTINCT rsc.specialty
+                            FROM provider_entities pe
+                            INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                            WHERE pe.npi_or_ccn = ?
+                            AND {actual_combined_where}
+                            {specialty_display_order}
+                        )
+                        """,
+                        [ccn_or_npi],
+                        "specialties"
+                    )
+                ]
+                
+                # Execute all subqueries in parallel
+                start_subqueries = asyncio.get_event_loop().time()
+                tasks = [execute_subquery(conn, query, params, field) for query, params, field in subqueries]
+                results = await asyncio.gather(*tasks)
+                subquery_time = asyncio.get_event_loop().time() - start_subqueries
+                
+                # Combine results
+                entity_data = entity.copy()
+                for field_name, result in results:
+                    if field_name == "employers" and result:
+                        employers_data = json.loads(result)
+                        for employer in employers_data:
+                            if employer.get('name'):
+                                employer['name'] = to_title_case(employer['name'])
+                        entity_data[field_name] = employers_data
+                    elif field_name in ["roles", "specialties"] and result:
+                        entity_data[field_name] = json.loads(result)
+                    else:
+                        entity_data[field_name] = result or 0 if field_name == "providers_count" else result or []
+                
+                entities.append(FacilityResponse(**entity_data))
+                
+                if len(entities) % 10 == 0:  # Log progress every 10 entities
+                    print(f"Processed {len(entities)}/{len(basic_entities)} entities, last batch subqueries took {subquery_time:.2f}s")
 
             total_pages = (total_count + per_page - 1) // per_page
+
+            print(f"Total processing time: {asyncio.get_event_loop().time() - start_time:.2f}s")
 
             return PaginatedEntityResponse(
                 data=entities,
