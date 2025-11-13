@@ -290,27 +290,9 @@ async def get_facilities_data(
                     total_pages=0,
                 )
 
-            # Step 2: Build the main query WITHOUT parameterized subqueries
+            # Step 2: Build the main query with proper sorting before pagination
             offset = (page - 1) * per_page
             
-            # Build consistent ordering for display in JSON arrays
-            if sort_by == "role":
-                role_display_order = f"ORDER BY rsc.role {sort_order}"
-                specialty_display_order = "ORDER BY rsc.specialty ASC"
-                employer_display_order = "ORDER BY emp.name ASC"
-            elif sort_by == "specialty":
-                role_display_order = "ORDER BY rsc.role ASC"
-                specialty_display_order = f"ORDER BY rsc.specialty {sort_order}"
-                employer_display_order = "ORDER BY emp.name ASC"
-            elif sort_by == "employer":
-                role_display_order = "ORDER BY rsc.role ASC"
-                specialty_display_order = "ORDER BY rsc.specialty ASC"
-                employer_display_order = f"ORDER BY emp.name {sort_order}"
-            else:
-                role_display_order = "ORDER BY rsc.role ASC"
-                specialty_display_order = "ORDER BY rsc.specialty ASC"
-                employer_display_order = "ORDER BY emp.name ASC"
-
             # Build the actual WHERE clauses for subqueries (not parameterized)
             def build_actual_where_clause(conditions, params):
                 """Replace ? placeholders with actual values"""
@@ -328,63 +310,80 @@ async def get_facilities_data(
             actual_combined_where = build_actual_where_clause(combined_where_clause, combined_params)
             actual_employer_where = build_actual_where_clause(employer_where_clause, employer_combined_params)
 
-            # Define sorting expressions for fields that can be null/empty
-            provider_employer_base_query = f"""
-                FROM provider_entities pe
-                JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
-                JOIN roles_specialties_classification rs ON rs.nucc_code = pt.nucc_code
-                WHERE pe.npi_or_ccn = e.ccn_or_npi
-                AND {actual_combined_where}
-            """
-
-            # Base query for employer joins - conditionally include provider_entities join
-            if needs_provider_join:
-                employer_base_query = f"""
-                    FROM provider_facility_employer_linked pfel
-                    JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
-                    JOIN provider_entities pe ON pe.provider_id = pfel.provider_id
-                    JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
-                    JOIN roles_specialties_classification rs ON rs.nucc_code = pt.nucc_code
-                    WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
-                    AND {actual_employer_where}
-                """
-            else:
-                employer_base_query = f"""
-                    FROM provider_facility_employer_linked pfel
-                    JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
-                    JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
-                    JOIN roles_specialties_classification rs ON rs.nucc_code = pt.nucc_code
-                    WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
-                    AND {actual_employer_where}
-                """
-
-            role_specialty_base_query = f"""
-                SELECT rs.role, rs.specialty
-                {provider_employer_base_query}
-            """
-
-            nulls_last_expr = {
-                "role": f"""
-                    (SELECT role FROM ({role_specialty_base_query} ORDER BY role {sort_order} LIMIT 1))
-                """,
-                "specialty": f"""
-                    (SELECT specialty FROM ({role_specialty_base_query} ORDER BY specialty {sort_order} LIMIT 1))
-                """,
-                "employer": f"""
-                    (SELECT emp.name {employer_base_query} ORDER BY emp.name {sort_order} LIMIT 1)
-                """,
-                "provider_count": f"""
-                    (SELECT COUNT(DISTINCT pe.provider_id) {provider_employer_base_query})
-                """
-            }
-
-            # Build order by clause
-            if sort_by in nulls_last_expr:
+            # NEW: Build proper sorting logic based on get_paginated_providers approach
+            if sort_by in ["role", "specialty", "employer"]:
+                # For array-based fields, we need to get the first (lowest) value for sorting
+                if sort_by == "role":
+                    sort_subquery = f"""
+                        SELECT rsc.role
+                        FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = e.ccn_or_npi
+                        AND {actual_combined_where}
+                        ORDER BY rsc.role {sort_order}
+                        LIMIT 1
+                    """
+                elif sort_by == "specialty":
+                    sort_subquery = f"""
+                        SELECT rsc.specialty
+                        FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = e.ccn_or_ccn
+                        AND {actual_combined_where}
+                        ORDER BY rsc.specialty {sort_order}
+                        LIMIT 1
+                    """
+                elif sort_by == "employer":
+                    if needs_provider_join:
+                        sort_subquery = f"""
+                            SELECT emp.name
+                            FROM provider_facility_employer_linked pfel
+                            INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                            INNER JOIN provider_entities pe ON pe.provider_id = pfel.provider_id
+                            INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                            WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
+                            AND {actual_employer_where}
+                            ORDER BY emp.name {sort_order}
+                            LIMIT 1
+                        """
+                    else:
+                        sort_subquery = f"""
+                            SELECT emp.name
+                            FROM provider_facility_employer_linked pfel
+                            INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                            INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                            WHERE pfel.facility_npi_or_ccn = e.ccn_or_npi
+                            AND {actual_employer_where}
+                            ORDER BY emp.name {sort_order}
+                            LIMIT 1
+                        """
+                
+                # Use the same nulls-last pattern as get_paginated_providers
                 order_by_clause = f"""
-                    CASE WHEN {nulls_last_expr[sort_by]} IS NULL OR {nulls_last_expr[sort_by]} = '' OR {nulls_last_expr[sort_by]} = 0 THEN 1 ELSE 0 END ASC,
-                    {nulls_last_expr[sort_by]} {sort_order}
+                    CASE WHEN ({sort_subquery}) IS NULL OR ({sort_subquery}) = '' THEN 1 ELSE 0 END,
+                    ({sort_subquery}) {sort_order},
+                    e.name ASC
+                """
+            elif sort_by == "provider_count":
+                sort_subquery = f"""
+                    SELECT COUNT(DISTINCT pe.provider_id)
+                    FROM provider_entities pe
+                    INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                    INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                    WHERE pe.npi_or_ccn = e.ccn_or_npi
+                    AND {actual_combined_where}
+                """
+                order_by_clause = f"""
+                    CASE WHEN ({sort_subquery}) IS NULL OR ({sort_subquery}) = 0 THEN 1 ELSE 0 END,
+                    ({sort_subquery}) {sort_order},
+                    e.name ASC
                 """
             else:
+                # For simple fields
                 simple_field_map = {
                     "name": "e.name",
                     "type": "e.type",
@@ -397,7 +396,39 @@ async def get_facilities_data(
                 field = simple_field_map.get(sort_by, "e.name")
                 order_by_clause = f"{field} {sort_order}"
 
-            # OPTIMIZED: Main query without subqueries - we'll fetch subquery data in parallel
+            # FIXED: Apply sorting to the entire dataset first, then paginate
+            # We'll use a subquery to get the sorted CCNs first
+            sorted_ccns_query = f"""
+                SELECT e.ccn_or_npi
+                FROM entities_enriched e
+                LEFT JOIN states s ON s.state_id = e.state_id
+                {where_clause}
+                ORDER BY {order_by_clause}
+                LIMIT ? OFFSET ?
+            """
+
+            # Execute to get sorted CCNs first
+            ccn_params = entity_params + [per_page, offset]
+            ccn_start_time = asyncio.get_event_loop().time()
+            ccn_cursor = await conn.execute(sorted_ccns_query, ccn_params)
+            ccn_rows = await ccn_cursor.fetchall()
+            ccns = [row[0] for row in ccn_rows]
+            ccn_query_time = asyncio.get_event_loop().time() - ccn_start_time
+
+            logger.info(f"✅ Sorted CCNs query executed in {ccn_query_time:.2f}s, found {len(ccns)} facilities")
+
+            if not ccns:
+                logger.info("❌ No results found after pagination")
+                return PaginatedEntityResponse(
+                    data=[],
+                    page=page,
+                    per_page=per_page,
+                    total=total_count,
+                    total_pages=total_pages,
+                )
+
+            # Now fetch the full entity data for the sorted CCNs
+            placeholders = ','.join(['?' for _ in ccns])
             main_query = f"""
                 SELECT
                     e.name,
@@ -413,28 +444,24 @@ async def get_facilities_data(
                     e.longitude
                 FROM entities_enriched e
                 LEFT JOIN states s ON s.state_id = e.state_id
-                {where_clause}
-                ORDER BY {order_by_clause}
-                LIMIT ? OFFSET ?
+                WHERE e.ccn_or_npi IN ({placeholders})
             """
-            
-            # Only pass the main entity parameters + pagination
-            all_params = entity_params + [per_page, offset]
-            
-            logger.debug(f"Main query: {main_query}")
-            logger.info(f"📄 Executing main query with {len(all_params)} parameters, page {page}, per_page {per_page}")
 
-            # Execute main query
-            start_time = asyncio.get_event_loop().time()
-            cursor = await conn.execute(main_query, all_params)
+            # Execute main query with CCNs as parameters
+            main_start_time = asyncio.get_event_loop().time()
+            cursor = await conn.execute(main_query, ccns)
             rows = await cursor.fetchall()
-            main_query_time = asyncio.get_event_loop().time() - start_time
-            
-            logger.info(f"✅ Main query executed in {main_query_time:.2f}s, found {len(rows)} rows")
+            main_query_time = asyncio.get_event_loop().time() - main_start_time
+
+            logger.info(f"✅ Main data query executed in {main_query_time:.2f}s, found {len(rows)} rows")
+
+            # Create a mapping of ccn to index for sorting to maintain the order
+            ccn_to_index = {ccn: idx for idx, ccn in enumerate(ccns)}
+            rows_sorted = sorted(rows, key=lambda row: ccn_to_index[row['ccn_or_npi']])
 
             # Convert rows to basic entities
             basic_entities = []
-            for row in rows:
+            for row in rows_sorted:
                 row_dict = dict(row)
                 if row_dict.get('name'):
                     row_dict['name'] = to_title_case(row_dict['name'])
@@ -447,6 +474,11 @@ async def get_facilities_data(
             # OPTIMIZATION: Execute subqueries in parallel for each facility
             entities = []
             logger.info(f"🔄 Starting subquery processing for {len(basic_entities)} entities...")
+            
+            # Build consistent ordering for display in JSON arrays - ALWAYS sort alphabetically for display
+            role_display_order = "ORDER BY rsc.role ASC"
+            specialty_display_order = "ORDER BY rsc.specialty ASC"
+            employer_display_order = "ORDER BY emp.name ASC"
             
             for i, entity in enumerate(basic_entities):
                 ccn_or_npi = entity['ccn_or_npi']
@@ -503,7 +535,7 @@ async def get_facilities_data(
                         [ccn_or_npi],
                         "employers"
                     ),
-                    # Roles
+                    # Roles - ALWAYS sort alphabetically for display
                     (
                         f"""
                         SELECT json_group_array(COALESCE(role, ''))
@@ -520,7 +552,7 @@ async def get_facilities_data(
                         [ccn_or_npi],
                         "roles"
                     ),
-                    # Specialties
+                    # Specialties - ALWAYS sort alphabetically for display
                     (
                         f"""
                         SELECT json_group_array(COALESCE(specialty, ''))
@@ -566,7 +598,7 @@ async def get_facilities_data(
 
             total_pages = (total_count + per_page - 1) // per_page
 
-            total_processing_time = asyncio.get_event_loop().time() - start_time
+            total_processing_time = asyncio.get_event_loop().time() - count_start
             logger.info(f"🎉 Query completed successfully in {total_processing_time:.2f}s")
             logger.info(f"📊 Final result: {len(entities)} entities, {total_count} total, {total_pages} pages")
 
