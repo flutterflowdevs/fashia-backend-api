@@ -1,6 +1,6 @@
 import sqlite3
 import app.db.db_query as db_query
-DB_FOLDER_PATH="/mnt/efs/fashia-db"
+DB_FOLDER_PATH="/mnt/efs"
 DATABASE_PATH = DB_FOLDER_PATH+"/facilities.db"
 
 def get_db():
