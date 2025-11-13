@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from app.services.get_facilities_data import get_facilities_data
 from app.controllers.helper_functions import get_container_environment_info, get_container_user_info
 from app.models.facility_request import FacilityFilterRequest
@@ -11,25 +11,32 @@ router = APIRouter()
 
 @router.get("/")
 async def root():
+    logger.info("📍 Root endpoint called")
     return {"status": "ok", "message": "Fashia Backend API"}
 
 @router.get("/api/hello")
 async def hello():
+    logger.info("📍 Hello endpoint called")
     return {"message": "Hello from Fashia API!"}
 
 @router.get("/api/health")
-async def health():
+async def api_health():  # Fixed: Renamed function
+    logger.info("📍 API Health endpoint called (/api/health)")
     return {"status": "ok", "service": "Fashia Backend API"}
 
 @router.get("/health")
-async def health():
+async def health():  # This is likely what ALB is hitting
+    logger.info("📍 Health endpoint called (/health)")
+    logger.info("✅ Health check PASSED - returning 200 OK")
     return {"status": "ok", "service": "Fashia Backend API"}
 
 @router.post("/entities")
 async def get_entities(request: FacilityFilterRequest):
     """POST endpoint to filter and retrieve entities"""
-    # Debug: Print the received request data
+    logger.info("=" * 80)
+    logger.info("📍 Entities endpoint called")
     logger.info(f"📨 Received request: {request.dict()}")
+    logger.info("=" * 80)
     
     try:
         result = await get_facilities_data(
@@ -56,12 +63,16 @@ async def get_entities(request: FacilityFilterRequest):
     except Exception as e:
         logger.error(f"💥 Error in controller: {str(e)}")
         logger.error(f"🔧 Error type: {type(e)}")
+        import traceback
+        logger.error(f"📋 Traceback: {traceback.format_exc()}")
         raise
 
 @router.get("/api/db-test")
 async def db_test():
     """Test database connection and permissions with detailed container info"""
+    logger.info("=" * 80)
     logger.info("🧪 Database test endpoint called")
+    logger.info("=" * 80)
     
     try:
         # Get detailed container info
@@ -124,6 +135,10 @@ async def db_test():
             facility_count = await cursor.fetchone()
             logger.info(f"🏥 Facilities count: {facility_count[0]}")
             
+            logger.info("=" * 80)
+            logger.info("✅ Database test PASSED")
+            logger.info("=" * 80)
+            
             return {
                 "status": "success",
                 "database_connection": "ok",
@@ -143,14 +158,19 @@ async def db_test():
         user_info = get_container_user_info()
         env_info = get_container_environment_info()
         
-        logger.error(f"💥 Database test failed: {error_details}")
-        logger.error(f"👤 User info during error: {user_info}")
-        logger.error(f"🏠 Environment during error: {env_info}")
+        logger.error("=" * 80)
+        logger.error(f"💥 Database test FAILED")
+        logger.error(f"   Error: {str(e)}")
+        logger.error(f"📋 Traceback: {error_details}")
+        logger.error(f"👤 User info: {user_info}")
+        logger.error(f"🏠 Environment: {env_info}")
+        logger.error("=" * 80)
         
         return {
             "status": "error",
             "database_connection": "failed",
             "error": str(e),
+            "traceback": error_details,
             "user_info": user_info,
             "environment_info": env_info
-        }    
+        }
