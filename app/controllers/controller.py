@@ -21,6 +21,10 @@ async def hello():
 async def health():
     return {"status": "ok", "service": "Fashia Backend API"}
 
+@router.get("/health")
+async def health():
+    return {"status": "ok", "service": "Fashia Backend API"}
+
 @router.post("/entities")
 async def get_entities(request: FacilityFilterRequest):
     """POST endpoint to filter and retrieve entities"""
