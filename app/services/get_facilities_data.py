@@ -1,9 +1,18 @@
+import os
+import logging
 from typing import List, Optional
 from fastapi import HTTPException
 from app.db.session import get_db_connection
 from app.models.facility_model import FacilityResponse, PaginatedEntityResponse
 import asyncio
 import json
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def to_title_case(text: str) -> str:
     """Convert text to title case"""
@@ -14,11 +23,15 @@ def to_title_case(text: str) -> str:
 async def execute_subquery(conn, query: str, params: List, field_name: str):
     """Execute a subquery and return the result with field name"""
     try:
+        logger.debug(f"Executing subquery for {field_name}: {query[:100]}... with params: {params}")
         cursor = await conn.execute(query, params)
         result = await cursor.fetchone()
+        logger.debug(f"Subquery {field_name} result: {result}")
         return field_name, result[0] if result else None
     except Exception as e:
-        print(f"Error in subquery for {field_name}: {e}")
+        logger.error(f"Error in subquery for {field_name}: {e}")
+        logger.error(f"Query: {query}")
+        logger.error(f"Params: {params}")
         return field_name, None
 
 async def get_facilities_data(
@@ -44,6 +57,11 @@ async def get_facilities_data(
     Fetch paginated facilities from local SQLite database.
     Facilities are entities where is_employer = 0.
     """
+    # Log function entry and parameters
+    logger.info("🔍 get_facilities_data called")
+    logger.info(f"📊 Parameters - name: {name}, cities: {cities}, states: {states}, page: {page}, per_page: {per_page}")
+    logger.info(f"🔧 Container User Info - UID: {os.getuid()}, GID: {os.getgid()}, User: {os.getenv('USER', 'Unknown')}")
+    
     # Handle None values for lists
     cities = cities or []
     states = states or []
@@ -57,26 +75,47 @@ async def get_facilities_data(
     # Validate sort parameters
     valid_sort_fields = ["name", "type", "subtype", "city", "state_name", "address", "zip_code", "role", "specialty", "employer", "provider_count"]
     if sort_by not in valid_sort_fields:
+        logger.warning(f"Invalid sort_by: {sort_by}, defaulting to 'name'")
         sort_by = "name"
     
     sort_order = sort_order.upper()
     if sort_order not in ["ASC", "DESC"]:
+        logger.warning(f"Invalid sort_order: {sort_order}, defaulting to 'ASC'")
         sort_order = "ASC"
     
+    logger.info(f"🎯 Final sort - by: {sort_by}, order: {sort_order}")
+    
     try:
+        # Log database connection attempt
+        logger.info("🔄 Attempting database connection...")
+        
         async with get_db_connection() as conn:
+            logger.info("✅ Database connection established successfully")
+            
+            # Log database info
+            try:
+                cursor = await conn.execute("PRAGMA database_list")
+                db_info = await cursor.fetchall()
+                for db in db_info:
+                    logger.info(f"📁 Database file: {db[2]} (seq: {db[0]}, name: {db[1]})")
+            except Exception as e:
+                logger.warning(f"Could not get database info: {e}")
+            
             # Set query optimizations
             await conn.execute("PRAGMA temp_store = MEMORY")
             await conn.execute("PRAGMA cache_size = -64000")
+            logger.debug("Database optimizations applied")
             
             # Build base filters
             entity_params = []
             filters = ["e.is_employer = 0"]
+            logger.info("Building query filters...")
 
             # Name contains search
             if name:
                 filters.append("LOWER(e.name) LIKE ?")
                 entity_params.append(f"%{name.lower()}%")
+                logger.debug(f"Added name filter: {name}")
             
             if cities:
                 city_conditions = []
@@ -84,6 +123,7 @@ async def get_facilities_data(
                     city_conditions.append("LOWER(e.city) = ?")
                     entity_params.append(city.lower())
                 filters.append(f"({' OR '.join(city_conditions)})")
+                logger.debug(f"Added city filters: {cities}")
             
             if states:
                 state_conditions = []
@@ -91,14 +131,17 @@ async def get_facilities_data(
                     state_conditions.append("LOWER(s.state_name) = ?")
                     entity_params.append(state.lower())
                 filters.append(f"({' OR '.join(state_conditions)})")
+                logger.debug(f"Added state filters: {states}")
             
             if address:
                 filters.append("LOWER(e.address) LIKE ?")
                 entity_params.append(f"%{address.lower()}%")
+                logger.debug(f"Added address filter: {address}")
             
             if zipcode:
                 filters.append("e.zip_code = ?")
                 entity_params.append(zipcode)
+                logger.debug(f"Added zipcode filter: {zipcode}")
             
             if types:
                 type_conditions = []
@@ -106,6 +149,7 @@ async def get_facilities_data(
                     type_conditions.append("LOWER(e.type) = ?")
                     entity_params.append(facility_type.lower())
                 filters.append(f"({' OR '.join(type_conditions)})")
+                logger.debug(f"Added type filters: {types}")
             
             if subtypes:
                 subtype_conditions = []
@@ -113,6 +157,7 @@ async def get_facilities_data(
                     subtype_conditions.append("LOWER(e.subtype) = ?")
                     entity_params.append(subtype.lower())
                 filters.append(f"({' OR '.join(subtype_conditions)})")
+                logger.debug(f"Added subtype filters: {subtypes}")
 
             # Bounding box coordinates filter
             if coords and len(coords) >= 2:
@@ -127,6 +172,7 @@ async def get_facilities_data(
                     entity_params.extend([lat_min, lat_max])
                     filters.append("e.longitude BETWEEN ? AND ?")
                     entity_params.extend([lng_min, lng_max])
+                    logger.debug(f"Added coordinate filter: lat({lat_min}-{lat_max}), lng({lng_min}-{lng_max})")
 
             # Build provider filter conditions and parameters separately
             provider_conditions = []
@@ -135,15 +181,19 @@ async def get_facilities_data(
             if provider_first_name and provider_last_name:
                 provider_conditions.append("(LOWER(pe.first_name) = LOWER(?) AND LOWER(pe.last_name) = LOWER(?))")
                 provider_params.extend([provider_first_name, provider_last_name])
+                logger.debug(f"Added provider name filter: {provider_first_name} {provider_last_name}")
             elif provider_first_name:
                 provider_conditions.append("LOWER(pe.first_name) = LOWER(?)")
                 provider_params.append(provider_first_name)
+                logger.debug(f"Added provider first name filter: {provider_first_name}")
             elif provider_last_name:
                 provider_conditions.append("LOWER(pe.last_name) = LOWER(?)")
                 provider_params.append(provider_last_name)
+                logger.debug(f"Added provider last name filter: {provider_last_name}")
             
             # Determine if we need provider_entities join for employer query
             needs_provider_join = bool(provider_first_name or provider_last_name)
+            logger.debug(f"Needs provider join: {needs_provider_join}")
             
             # Build COMBINED filter for roles, specialties, and provider_count subqueries
             combined_conditions = []
@@ -159,12 +209,14 @@ async def get_facilities_data(
                 for role in roles:
                     combined_conditions.append("LOWER(rsc.role) = LOWER(?)")
                     combined_params.append(role)
+                logger.debug(f"Added role filters: {roles}")
             
             # Add specialty conditions
             if specialties:
                 for specialty in specialties:
                     combined_conditions.append("LOWER(rsc.specialty) = LOWER(?)")
                     combined_params.append(specialty)
+                logger.debug(f"Added specialty filters: {specialties}")
             
             # Combined WHERE clause for roles, specialties, and provider_count subqueries
             combined_where_clause = " AND ".join(combined_conditions) if combined_conditions else "1=1"
@@ -179,6 +231,7 @@ async def get_facilities_data(
                     emp_conditions.append("LOWER(emp.name) LIKE ?")
                     employer_combined_params.append(f"%{employer.lower()}%")
                 employer_combined_conditions.append(f"({' OR '.join(emp_conditions)})")
+                logger.debug(f"Added employer filters: {employers}")
             
             employer_where_clause = " AND ".join(employer_combined_conditions) if employer_combined_conditions else "1=1"
             
@@ -207,6 +260,8 @@ async def get_facilities_data(
                 entity_params.extend(employer_combined_params)
 
             where_clause = "WHERE " + " AND ".join(filters) if filters else ""
+            logger.info(f"📝 Final WHERE clause: {where_clause}")
+            logger.info(f"🔢 Total parameters: {len(entity_params)}")
 
             # Step 1: Get total count
             count_query = f"""
@@ -215,11 +270,18 @@ async def get_facilities_data(
                 LEFT JOIN states s ON s.state_id = e.state_id
                 {where_clause}
             """
+            logger.debug(f"Count query: {count_query}")
+            
+            count_start = asyncio.get_event_loop().time()
             count_cursor = await conn.execute(count_query, entity_params)
             total_count_row = await count_cursor.fetchone()
             total_count = total_count_row[0] if total_count_row else 0
+            count_time = asyncio.get_event_loop().time() - count_start
+            
+            logger.info(f"📊 Total count: {total_count} (query took {count_time:.2f}s)")
 
             if total_count == 0:
+                logger.info("❌ No results found for the given filters")
                 return PaginatedEntityResponse(
                     data=[],
                     page=page,
@@ -359,13 +421,16 @@ async def get_facilities_data(
             # Only pass the main entity parameters + pagination
             all_params = entity_params + [per_page, offset]
             
+            logger.debug(f"Main query: {main_query}")
+            logger.info(f"📄 Executing main query with {len(all_params)} parameters, page {page}, per_page {per_page}")
+
             # Execute main query
             start_time = asyncio.get_event_loop().time()
             cursor = await conn.execute(main_query, all_params)
             rows = await cursor.fetchall()
             main_query_time = asyncio.get_event_loop().time() - start_time
             
-            print(f"Main query executed in {main_query_time:.2f}s, found {len(rows)} rows")
+            logger.info(f"✅ Main query executed in {main_query_time:.2f}s, found {len(rows)} rows")
 
             # Convert rows to basic entities
             basic_entities = []
@@ -381,7 +446,9 @@ async def get_facilities_data(
 
             # OPTIMIZATION: Execute subqueries in parallel for each facility
             entities = []
-            for entity in basic_entities:
+            logger.info(f"🔄 Starting subquery processing for {len(basic_entities)} entities...")
+            
+            for i, entity in enumerate(basic_entities):
                 ccn_or_npi = entity['ccn_or_npi']
                 
                 # Build employers query conditionally
@@ -494,12 +561,14 @@ async def get_facilities_data(
                 
                 entities.append(FacilityResponse(**entity_data))
                 
-                if len(entities) % 10 == 0:  # Log progress every 10 entities
-                    print(f"Processed {len(entities)}/{len(basic_entities)} entities, last batch subqueries took {subquery_time:.2f}s")
+                if (i + 1) % 10 == 0:  # Log progress every 10 entities
+                    logger.info(f"📦 Processed {i + 1}/{len(basic_entities)} entities, last batch subqueries took {subquery_time:.2f}s")
 
             total_pages = (total_count + per_page - 1) // per_page
 
-            print(f"Total processing time: {asyncio.get_event_loop().time() - start_time:.2f}s")
+            total_processing_time = asyncio.get_event_loop().time() - start_time
+            logger.info(f"🎉 Query completed successfully in {total_processing_time:.2f}s")
+            logger.info(f"📊 Final result: {len(entities)} entities, {total_count} total, {total_pages} pages")
 
             return PaginatedEntityResponse(
                 data=entities,
@@ -512,5 +581,8 @@ async def get_facilities_data(
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Database error details: {error_details}")
+        logger.error(f"💥 Database error details: {error_details}")
+        logger.error(f"🚨 Container User Info during error - UID: {os.getuid()}, GID: {os.getgid()}")
+        logger.error(f"📁 Current working directory: {os.getcwd()}")
+        logger.error(f"🔍 Database path environment: {os.getenv('DATABASE_PATH', 'Not set')}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
