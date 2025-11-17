@@ -1,8 +1,13 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from app.services.get_facilities_data import get_facilities_data
 from app.services.get_employer_data import get_employer_data
 from app.request_model.facility_request import FacilityFilterRequest
 from app.request_model.employer_request import EmployerFilterRequest
+from app.controllers.helper_functions import get_container_environment_info, get_container_user_info
+import logging
+import os
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -91,8 +96,7 @@ async def get_employers(request: EmployerFilterRequest):
         return result
     except Exception as e:
         print(f"Error in employer controller: {str(e)}")
-        print(f"Error type: {type(e)}")
-        raise    
+        print(f"Error type: {type(e)}") 
         logger.error(f"💥 Error in controller: {str(e)}")
         logger.error(f"🔧 Error type: {type(e)}")
         import traceback
