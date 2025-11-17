@@ -7,6 +7,7 @@ class FacilityEmployer(BaseModel):
     ccn_or_npi: str
 
 class FacilityResponse(BaseModel):
+    id: Optional[int] = 0
     name: Optional[str] = None
     type: Optional[str] = None
     subtype: Optional[str] = None
