@@ -1,12 +1,13 @@
 import sqlite3
+import aiosqlite  # You need this for true async SQLite
 import app.db.db_query as db_query
-import aiosqlite
 from contextlib import asynccontextmanager
 
-DB_FOLDER_PATH="/Users/tester/Downloads"
-DATABASE_PATH = DB_FOLDER_PATH+"/facilities.db"
+DB_FOLDER_PATH = "/mnt/efs"
+DATABASE_PATH = DB_FOLDER_PATH + "/facilities.db"
 
 def get_db():
+    """Synchronous connection for simple operations"""
     return sqlite3.connect(DATABASE_PATH)
 
 
@@ -23,11 +24,12 @@ def get_entity_table_count():
     conn.close()
     return count
 
+
 @asynccontextmanager
 async def get_db_connection():
-    """Async context manager for SQLite connection."""
+    """Async context manager for SQLite connection using aiosqlite."""
     conn = await aiosqlite.connect(DATABASE_PATH)
-    await conn.execute('PRAGMA journal_mode=WAL')  
+    await conn.execute('PRAGMA journal_mode=WAL')
     conn.row_factory = aiosqlite.Row
     try:
         yield conn
