@@ -431,6 +431,7 @@ async def get_facilities_data(
             placeholders = ','.join(['?' for _ in ccns])
             main_query = f"""
                 SELECT
+                    e.id,
                     e.name,
                     e.type,
                     e.subtype,

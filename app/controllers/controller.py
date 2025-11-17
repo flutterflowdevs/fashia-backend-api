@@ -1,11 +1,8 @@
 from fastapi import APIRouter, Request
 from app.services.get_facilities_data import get_facilities_data
-from app.controllers.helper_functions import get_container_environment_info, get_container_user_info
-from app.models.facility_request import FacilityFilterRequest
-import os
-import logging
-
-logger = logging.getLogger(__name__)
+from app.services.get_employer_data import get_employer_data
+from app.request_model.facility_request import FacilityFilterRequest
+from app.request_model.employer_request import EmployerFilterRequest
 
 router = APIRouter()
 
@@ -61,6 +58,41 @@ async def get_entities(request: FacilityFilterRequest):
         logger.info(f"✅ Request processed successfully, returning {len(result.data)} entities")
         return result
     except Exception as e:
+        print(f"Error in controller: {str(e)}")
+        print(f"Error type: {type(e)}")
+        raise
+
+@router.post("/get_employers")
+async def get_employers(request: EmployerFilterRequest):
+    """POST endpoint to filter and retrieve employers"""
+    # Debug: Print the received request data
+    print(f"Received employer request: {request.dict()}")
+    
+    try:
+        result = await get_employer_data(
+            name=request.name,
+            cities=request.city,
+            states=request.state,
+            address=request.address,
+            zipcode=request.zipcode,
+            types=request.type,
+            subtypes=request.subtype,
+            facilities=request.facilities,
+            roles=request.roles,
+            specialties=request.specialties,
+            page=request.page,
+            per_page=request.per_page,
+            sort_by=request.sort_by,
+            sort_order=request.sort_order,
+            provider_first_name=request.provider_first_name,
+            provider_last_name=request.provider_last_name,
+            coords=request.coords
+        )
+        return result
+    except Exception as e:
+        print(f"Error in employer controller: {str(e)}")
+        print(f"Error type: {type(e)}")
+        raise    
         logger.error(f"💥 Error in controller: {str(e)}")
         logger.error(f"🔧 Error type: {type(e)}")
         import traceback
