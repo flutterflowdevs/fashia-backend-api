@@ -1,8 +1,10 @@
 from fastapi import APIRouter
 from app.services.get_facilities_data import get_facilities_data
 from app.services.get_employer_data import get_employer_data
+from app.services.get_provider_data import get_providers_data
 from app.request_model.facility_request import FacilityFilterRequest
 from app.request_model.employer_request import EmployerFilterRequest
+from app.request_model.provider_request import ProviderFilterRequest
 from app.controllers.helper_functions import get_container_environment_info, get_container_user_info
 import logging
 import os
@@ -92,6 +94,43 @@ async def get_employers(request: EmployerFilterRequest):
             provider_first_name=request.provider_first_name,
             provider_last_name=request.provider_last_name,
             coords=request.coords
+        )
+        return result
+    except Exception as e:
+        print(f"Error in employer controller: {str(e)}")
+        print(f"Error type: {type(e)}") 
+        logger.error(f"💥 Error in controller: {str(e)}")
+        logger.error(f"🔧 Error type: {type(e)}")
+        import traceback
+        logger.error(f"📋 Traceback: {traceback.format_exc()}")
+        raise
+
+
+@router.post("/get_providers")
+async def get_providers(request: ProviderFilterRequest):
+    """POST endpoint to filter and retrieve providers"""
+    # Debug: Print the received request data
+    print(f"Received provider request: {request.dict()}")
+    
+    try:
+        result = await get_providers_data(
+            first_name=request.first_name,
+            last_name=request.last_name,
+            roles=request.roles,
+            specialties=request.specialties,
+            facility_cities=request.facility_cities,
+            facility_states=request.facility_states,
+            facility_address=request.facility_address,
+            facility_zipcode=request.facility_zipcode,
+            license_state_id=request.license_state_id,
+            facility_names=request.facility_names,
+            employer_names=request.employer_names,
+            facility_types=request.facility_types,
+            facility_subtypes=request.facility_subtypes,
+            page=request.page,
+            per_page=request.per_page,
+            sort_by=request.sort_by,
+            sort_order=request.sort_order,
         )
         return result
     except Exception as e:
