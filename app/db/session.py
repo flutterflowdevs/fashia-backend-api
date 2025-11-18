@@ -3,7 +3,7 @@ import aiosqlite  # You need this for true async SQLite
 import app.db.db_query as db_query
 from contextlib import asynccontextmanager
 
-DATABASE_PATH = os.getenv("DB_PATH", "/tmp/fashia.db")
+DATABASE_PATH = os.getenv("SQLITE_DB_PATH")
 
 def get_db():
     """Synchronous connection for simple operations"""
