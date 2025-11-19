@@ -6,9 +6,6 @@ echo "🚀 Start.sh executed"
 echo "EFS_DB_PATH: $EFS_DB_PATH"
 echo "SQLITE_DB_PATH: $SQLITE_DB_PATH"
 echo "=========================="
-echo "Listing EFS root:"
-ls -lah /mnt/efs
-
 
 # Check if EFS source DB exists
 if [ -f "$EFS_DB_PATH" ]; then
