@@ -4,7 +4,8 @@ import app.db.db_query as db_query
 from contextlib import asynccontextmanager
 import os
 
-DATABASE_PATH = os.getenv("SQLITE_DB_PATH")
+DB_FOLDER_PATH="/mnt/efs"
+DATABASE_PATH = DB_FOLDER_PATH + "/facilities.db"
 
 def get_db():
     """Synchronous connection for simple operations"""
