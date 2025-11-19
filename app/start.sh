@@ -9,8 +9,6 @@ echo "=========================="
 echo "Listing EFS root:"
 ls -lah /mnt/efs
 
-echo "Listing EFS/fashia-db:"
-ls -lah /mnt/efs/fashia-db
 
 # Check if EFS source DB exists
 if [ -f "$EFS_DB_PATH" ]; then
