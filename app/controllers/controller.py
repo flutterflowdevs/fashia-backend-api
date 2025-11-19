@@ -222,7 +222,8 @@ async def db_test():
                 "facilities_count": facility_count[0],
                 "user_info": user_info,
                 "environment_info": env_info,
-                "filesystem_info": fs_info
+                "filesystem_info": fs_info,
+                "db_path":db_path
             }
             
     except Exception as e:
@@ -249,3 +250,4 @@ async def db_test():
             "user_info": user_info,
             "environment_info": env_info
         }
+
