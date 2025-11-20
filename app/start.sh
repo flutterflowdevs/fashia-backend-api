@@ -8,15 +8,15 @@ echo "SQLITE_DB_PATH: $SQLITE_DB_PATH"
 echo "=========================="
 
 # Check if EFS source DB exists
-if [ -f "$EFS_DB_PATH" ]; then
-    echo "📁 Found EFS DB at $EFS_DB_PATH"
-    echo "📥 Copying DB from EFS to $SQLITE_DB_PATH ..."
-    cp "$EFS_DB_PATH" "$SQLITE_DB_PATH"
-    echo "✅ Copy complete."
-else
-    echo "❌ ERROR: EFS DB NOT FOUND at $EFS_DB_PATH"
-    ls -R /mnt/efs
-fi
+# if [ -f "$EFS_DB_PATH" ]; then
+#     echo "📁 Found EFS DB at $EFS_DB_PATH"
+#     echo "📥 Copying DB from EFS to $SQLITE_DB_PATH ..."
+#     cp "$EFS_DB_PATH" "$SQLITE_DB_PATH"
+#     echo "✅ Copy complete."
+# else
+#     echo "❌ ERROR: EFS DB NOT FOUND at $EFS_DB_PATH"
+#     ls -R /mnt/efs
+# fi
 
 echo "=========================="
 echo "Starting API server..."
