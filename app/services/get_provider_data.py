@@ -564,6 +564,7 @@ def build_order_by_clause(sort_by: str, sort_order: str, role_specialty_conditio
         else:
             return "p.last_name ASC, p.first_name ASC"
 
+
 async def fetch_complete_provider_data(
     conn, npis: List[str], 
     role_specialty_conditions: List, 
@@ -767,6 +768,7 @@ def build_pfel_comprehensive_query(
     return f"""
         WITH provider_base AS (
             SELECT 
+                p.id,
                 p.npi,
                 p.first_name,
                 p.last_name,
@@ -803,6 +805,15 @@ def build_pfel_comprehensive_query(
             WHERE pt.npi IN ({placeholders})
             GROUP BY pt.npi
         ),
+        -- NEW: Count ALL providers per facility (not just current page)
+        facility_counts AS (
+            SELECT 
+                facility_npi_or_ccn,
+                COUNT(DISTINCT provider_id) as pcount
+            FROM pfel_new
+            WHERE {data_filter_condition}
+            GROUP BY facility_npi_or_ccn
+        ),
         -- Get ONLY the filtered facility data and their associated employers
         provider_filtered_data AS (
             SELECT 
@@ -821,7 +832,7 @@ def build_pfel_comprehensive_query(
                         'state_name', COALESCE(pfel_data.facility_state_name, ''),
                         'state_code', COALESCE(pfel_data.facility_state_code, ''),
                         'city', COALESCE(pfel_data.facility_city, ''),
-                        'provider_count', 0
+                        'provider_count', COALESCE(fc.pcount, 0)
                     )
                 ) as facility_names,
                 -- For employer_names: only include employers associated with the filtered facilities
@@ -837,11 +848,13 @@ def build_pfel_comprehensive_query(
                 json_group_array(DISTINCT pfel_data.facility_type) as facility_types,
                 json_group_array(DISTINCT pfel_data.facility_subtype) as facility_subtypes
             FROM pfel_new pfel_data
+            LEFT JOIN facility_counts fc ON fc.facility_npi_or_ccn = pfel_data.facility_npi_or_ccn
             WHERE pfel_data.provider_id IN ({placeholders})
             AND {data_filter_condition}
             GROUP BY pfel_data.provider_id
         )
         SELECT 
+            pb.id,
             pb.npi,
             pb.first_name,
             pb.last_name,
@@ -862,6 +875,7 @@ def build_pfel_comprehensive_query(
         LEFT JOIN provider_filtered_data pfd ON pfd.npi = pb.npi
     """
 
+
 def build_facility_comprehensive_query(
     npis: List[str], placeholders: str, role_specialty_where: str,
     facility_cities: List[str], facility_states: List[str], facility_address: str, facility_zipcode: str,
@@ -870,7 +884,6 @@ def build_facility_comprehensive_query(
     """Build comprehensive query for provider_entities + entities_enriched tables - get ONLY filtered facilities and their associated employers from pfel_new"""
     
     # Build filter conditions for facility data
-    # NOTE: Using the actual column names from entities_enriched table
     filter_conditions = []
     if facility_names:
         name_conditions = []
@@ -953,6 +966,7 @@ def build_facility_comprehensive_query(
     return f"""
         WITH provider_base AS (
             SELECT 
+                p.id,
                 p.npi,
                 p.first_name,
                 p.last_name,
@@ -989,6 +1003,17 @@ def build_facility_comprehensive_query(
             WHERE pt.npi IN ({placeholders})
             GROUP BY pt.npi
         ),
+        -- NEW: Count ALL providers per facility (not just current page)
+        facility_counts AS (
+            SELECT 
+                pe.npi_or_ccn as facility_ccn,
+                COUNT(DISTINCT pe.provider_id) as pcount
+            FROM provider_entities pe
+            INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pe.npi_or_ccn
+            LEFT JOIN states st ON st.state_id = ee.state_id
+            WHERE {data_filter_condition}
+            GROUP BY pe.npi_or_ccn
+        ),
         -- Get ONLY the filtered facility data
         provider_facility_data AS (
             SELECT 
@@ -996,6 +1021,7 @@ def build_facility_comprehensive_query(
                 -- Only include the filtered facilities
                 json_group_array(
                     DISTINCT json_object(
+                        'id', COALESCE(ee.id, ''),
                         'name', COALESCE(ee.name, ''),
                         'ccn_or_npi', COALESCE(ee.ccn_or_npi, ''),
                         'type', COALESCE(ee.type, ''),
@@ -1007,7 +1033,7 @@ def build_facility_comprehensive_query(
                         'state_name', COALESCE(st.state_name, ''),
                         'state_code', COALESCE(st.state_code, ''),
                         'city', COALESCE(ee.city, ''),
-                        'provider_count', 0
+                        'provider_count', COALESCE(fc.pcount, 0)
                     )
                 ) as facility_names,
                 -- For arrays: only include data from filtered facilities
@@ -1018,6 +1044,7 @@ def build_facility_comprehensive_query(
             FROM provider_entities pe
             INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pe.npi_or_ccn
             LEFT JOIN states st ON st.state_id = ee.state_id
+            LEFT JOIN facility_counts fc ON fc.facility_ccn = ee.ccn_or_npi
             WHERE pe.provider_id IN ({placeholders})
             AND {data_filter_condition}
             GROUP BY pe.provider_id
@@ -1038,6 +1065,7 @@ def build_facility_comprehensive_query(
             GROUP BY pfel.provider_id
         )
         SELECT 
+            pb.id,
             pb.npi,
             pb.first_name,
             pb.last_name,
@@ -1078,6 +1106,7 @@ def build_employer_comprehensive_query(
     return f"""
         WITH provider_base AS (
             SELECT 
+                p.id,
                 p.npi,
                 p.first_name,
                 p.last_name,
@@ -1133,12 +1162,21 @@ def build_employer_comprehensive_query(
             AND {data_filter_condition}
             GROUP BY pem.provider_id
         ),
+        -- NEW: Count ALL providers per facility (not just current page)
+        facility_counts AS (
+            SELECT 
+                pfel.facility_npi_or_ccn,
+                COUNT(DISTINCT pfel.provider_id) as pcount
+            FROM pfel_new pfel
+            GROUP BY pfel.facility_npi_or_ccn
+        ),
         -- Get facilities associated with the filtered employers from pfel_new
         provider_facility_data AS (
             SELECT 
                 pfel.provider_id as npi,
                 json_group_array(
                     DISTINCT json_object(
+                        'id', COALESCE(pfel.id, ''),
                         'name', COALESCE(pfel.facility_name, ''),
                         'ccn_or_npi', COALESCE(pfel.facility_npi_or_ccn, ''),
                         'type', COALESCE(pfel.facility_type, ''),
@@ -1150,7 +1188,7 @@ def build_employer_comprehensive_query(
                         'state_name', COALESCE(pfel.facility_state_name, ''),
                         'state_code', COALESCE(pfel.facility_state_code, ''),
                         'city', COALESCE(pfel.facility_city, ''),
-                        'provider_count', 0
+                        'provider_count', COALESCE(fc.pcount, 0)
                     )
                 ) as facility_names,
                 json_group_array(DISTINCT pfel.facility_city) as facility_cities,
@@ -1158,6 +1196,7 @@ def build_employer_comprehensive_query(
                 json_group_array(DISTINCT pfel.facility_type) as facility_types,
                 json_group_array(DISTINCT pfel.facility_subtype) as facility_subtypes
             FROM pfel_new pfel
+            LEFT JOIN facility_counts fc ON fc.facility_npi_or_ccn = pfel.facility_npi_or_ccn
             WHERE pfel.provider_id IN ({placeholders})
             AND EXISTS (
                 SELECT 1 FROM provider_employer_data ped 
@@ -1166,6 +1205,7 @@ def build_employer_comprehensive_query(
             GROUP BY pfel.provider_id
         )
         SELECT 
+            pb.id,
             pb.npi,
             pb.first_name,
             pb.last_name,
@@ -1192,6 +1232,7 @@ def build_providers_only_comprehensive_query(npis: List[str], placeholders: str,
     return f"""
         WITH provider_base AS (
             SELECT 
+                p.id,
                 p.npi,
                 p.first_name,
                 p.last_name,
@@ -1227,8 +1268,63 @@ def build_providers_only_comprehensive_query(npis: List[str], placeholders: str,
             LEFT JOIN states lic_state ON lic_state.state_id = pt.license_state_id
             WHERE pt.npi IN ({placeholders})
             GROUP BY pt.npi
+        ),
+        -- Count ALL providers per facility (not just current page)
+        facility_counts AS (
+            SELECT 
+                pe.npi_or_ccn as facility_ccn,
+                COUNT(DISTINCT pe.provider_id) as pcount
+            FROM provider_entities pe
+            GROUP BY pe.npi_or_ccn
+        ),
+        -- Get ALL facility data for the providers (not filtered)
+        provider_facility_data AS (
+            SELECT 
+                pe.provider_id as npi,
+                json_group_array(
+                    DISTINCT json_object(
+                        'id', COALESCE(ee.id, ''),
+                        'name', COALESCE(ee.name, ''),
+                        'ccn_or_npi', COALESCE(ee.ccn_or_npi, ''),
+                        'type', COALESCE(ee.type, ''),
+                        'subtype', COALESCE(ee.subtype, ''),
+                        'address', COALESCE(ee.address, ''),
+                        'zip_code', COALESCE(ee.zip_code, ''),
+                        'latitude', COALESCE(ee.latitude, 0.0),
+                        'longitude', COALESCE(ee.longitude, 0.0),
+                        'state_name', COALESCE(st.state_name, ''),
+                        'state_code', COALESCE(st.state_code, ''),
+                        'city', COALESCE(ee.city, ''),
+                        'provider_count', COALESCE(fc.pcount, 0)
+                    )
+                ) as facility_names,
+                json_group_array(DISTINCT ee.city) as facility_cities,
+                json_group_array(DISTINCT st.state_name) as facility_states,
+                json_group_array(DISTINCT ee.type) as facility_types,
+                json_group_array(DISTINCT ee.subtype) as facility_subtypes
+            FROM provider_entities pe
+            INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pe.npi_or_ccn
+            LEFT JOIN states st ON st.state_id = ee.state_id
+            LEFT JOIN facility_counts fc ON fc.facility_ccn = ee.ccn_or_npi
+            WHERE pe.provider_id IN ({placeholders})
+            GROUP BY pe.provider_id
+        ),
+        -- Get ALL employer data for the providers (not filtered)
+        provider_employer_data AS (
+            SELECT 
+                pfel.provider_id as npi,
+                json_group_array(
+                    DISTINCT json_object(
+                        'name', pfel.employer_name,
+                        'ccn_or_npi', pfel.employer_npi_or_ccn
+                    )
+                ) as employer_names
+            FROM pfel_new pfel
+            WHERE pfel.provider_id IN ({placeholders})
+            GROUP BY pfel.provider_id
         )
         SELECT 
+            pb.id,
             pb.npi,
             pb.first_name,
             pb.last_name,
@@ -1236,16 +1332,18 @@ def build_providers_only_comprehensive_query(npis: List[str], placeholders: str,
             COALESCE(pr.roles, '[]') as roles,
             COALESCE(ps.specialties, '[]') as specialties,
             COALESCE(pls.licensure_states, '[]') as licensure_states,
-            '[]' as facility_cities,
-            '[]' as facility_states,
-            '[]' as facility_types,
-            '[]' as facility_subtypes,
-            '[]' as employer_names,
-            '[]' as facility_names
+            COALESCE(pfd.facility_cities, '[]') as facility_cities,
+            COALESCE(pfd.facility_states, '[]') as facility_states,
+            COALESCE(pfd.facility_types, '[]') as facility_types,
+            COALESCE(pfd.facility_subtypes, '[]') as facility_subtypes,
+            COALESCE(ped.employer_names, '[]') as employer_names,
+            COALESCE(pfd.facility_names, '[]') as facility_names
         FROM provider_base pb
         LEFT JOIN provider_roles pr ON pr.npi = pb.npi
         LEFT JOIN provider_specialties ps ON ps.npi = pb.npi
         LEFT JOIN provider_licensure_states pls ON pls.npi = pb.npi
+        LEFT JOIN provider_facility_data pfd ON pfd.npi = pb.npi
+        LEFT JOIN provider_employer_data ped ON ped.npi = pb.npi
     """
 
 def build_comprehensive_query_params(
@@ -1272,15 +1370,26 @@ def build_comprehensive_query_params(
     if facility_subtypes is None:
         facility_subtypes = []
     
-    # Convert to list and build base params
-    base_params = list(npis)  # provider_base
-    base_params.extend(npis)  # provider_roles - npis
-    base_params.extend(role_specialty_params)  # provider_roles - role/specialty params
-    base_params.extend(npis)  # provider_specialties - npis
-    base_params.extend(role_specialty_params)  # provider_specialties - role/specialty params
-    base_params.extend(npis)  # provider_licensure_states
+    base_params = []
     
-    if query_type == "pfel":
+    if query_type == "provider_only":
+        # For provider_only query: 6 CTEs use NPIs, 2 use role_specialty_params
+        # provider_base: 1x npis
+        base_params.extend(npis)
+        # provider_roles: 1x npis + 1x role_specialty_params
+        base_params.extend(npis)
+        base_params.extend(role_specialty_params)
+        # provider_specialties: 1x npis + 1x role_specialty_params  
+        base_params.extend(npis)
+        base_params.extend(role_specialty_params)
+        # provider_licensure_states: 1x npis
+        base_params.extend(npis)
+        # provider_facility_data: 1x npis
+        base_params.extend(npis)
+        # provider_employer_data: 1x npis
+        base_params.extend(npis)
+        
+    elif query_type == "pfel":
         # Add filter params for pfel data
         filter_params = []
         if facility_names:
@@ -1300,6 +1409,16 @@ def build_comprehensive_query_params(
         if facility_subtypes:
             filter_params.extend(facility_subtypes)
         
+        # Base CTEs (same as provider_only)
+        base_params.extend(npis)  # provider_base
+        base_params.extend(npis)  # provider_roles - npis
+        base_params.extend(role_specialty_params)  # provider_roles - role/specialty
+        base_params.extend(npis)  # provider_specialties - npis
+        base_params.extend(role_specialty_params)  # provider_specialties - role/specialty
+        base_params.extend(npis)  # provider_licensure_states
+        
+        # Facility and employer CTEs
+        base_params.extend(filter_params)  # facility_counts - filter params
         base_params.extend(npis)  # provider_filtered_data - npis
         base_params.extend(filter_params)  # provider_filtered_data - filter params
     
@@ -1321,7 +1440,16 @@ def build_comprehensive_query_params(
         if facility_subtypes:
             filter_params.extend(facility_subtypes)
         
-        # FIXED: Add filter params twice - once for facility_data, once for employer_data
+        # Base CTEs
+        base_params.extend(npis)  # provider_base
+        base_params.extend(npis)  # provider_roles - npis
+        base_params.extend(role_specialty_params)  # provider_roles - role/specialty
+        base_params.extend(npis)  # provider_specialties - npis
+        base_params.extend(role_specialty_params)  # provider_specialties - role/specialty
+        base_params.extend(npis)  # provider_licensure_states
+        
+        # Facility and employer CTEs
+        base_params.extend(filter_params)  # facility_counts - filter params
         base_params.extend(npis)  # provider_facility_data - npis
         base_params.extend(filter_params)  # provider_facility_data - filter params
         base_params.extend(npis)  # provider_employer_data - npis
@@ -1333,10 +1461,21 @@ def build_comprehensive_query_params(
         if employer_names:
             filter_params.extend(employer_names)
         
+        # Base CTEs
+        base_params.extend(npis)  # provider_base
+        base_params.extend(npis)  # provider_roles - npis
+        base_params.extend(role_specialty_params)  # provider_roles - role/specialty
+        base_params.extend(npis)  # provider_specialties - npis
+        base_params.extend(role_specialty_params)  # provider_specialties - role/specialty
+        base_params.extend(npis)  # provider_licensure_states
+        
+        # Employer and facility CTEs
         base_params.extend(npis)  # provider_employer_data - npis
         base_params.extend(filter_params)  # provider_employer_data - filter params
+        # facility_counts CTE needs NO params (counts ALL providers at all facilities)
         base_params.extend(npis)  # provider_facility_data - npis
     
+    logger.info(f"🔢 Built params breakdown - NPIs: {len(npis)}, Role/Specialty: {len(role_specialty_params)}, Total: {len(base_params)}")
     return base_params
 
 async def fetch_complete_provider_data_fallback(
@@ -1351,5 +1490,5 @@ async def fetch_complete_provider_data_fallback(
     specialties: List[str]
 ) -> List[ProviderResponse]:
     """Fallback method using individual subqueries (slower but more reliable)"""
-    # ... (keep the original individual subquery implementation as fallback)
-    pass
+    # Placeholder for fallback implementation
+    return []

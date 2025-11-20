@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 # Response Model
 class ProviderResponse(BaseModel):
+    id: int
     npi: int
     first_name: str
     last_name: str
