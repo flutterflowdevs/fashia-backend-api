@@ -832,7 +832,7 @@ def build_pfel_comprehensive_query(
                         'state_name', COALESCE(pfel_data.facility_state_name, ''),
                         'state_code', COALESCE(pfel_data.facility_state_code, ''),
                         'city', COALESCE(pfel_data.facility_city, ''),
-                        'provider_count', COALESCE(fc.pcount, 0)
+                        'provider_count', COALESCE(pc.count, 0)
                     )
                 ) as facility_names,
                 -- For employer_names: only include employers associated with the filtered facilities
@@ -848,7 +848,7 @@ def build_pfel_comprehensive_query(
                 json_group_array(DISTINCT pfel_data.facility_type) as facility_types,
                 json_group_array(DISTINCT pfel_data.facility_subtype) as facility_subtypes
             FROM pfel_new pfel_data
-            LEFT JOIN facility_counts fc ON fc.facility_npi_or_ccn = pfel_data.facility_npi_or_ccn
+            LEFT JOIN provider_counts pc ON pc.npi_or_ccn = pfel_data.facility_npi_or_ccn
             WHERE pfel_data.provider_id IN ({placeholders})
             AND {data_filter_condition}
             GROUP BY pfel_data.provider_id
@@ -1009,8 +1009,6 @@ def build_facility_comprehensive_query(
                 pe.npi_or_ccn as facility_ccn,
                 COUNT(DISTINCT pe.provider_id) as pcount
             FROM provider_entities pe
-            INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pe.npi_or_ccn
-            LEFT JOIN states st ON st.state_id = ee.state_id
             WHERE {data_filter_condition}
             GROUP BY pe.npi_or_ccn
         ),
@@ -1033,7 +1031,7 @@ def build_facility_comprehensive_query(
                         'state_name', COALESCE(st.state_name, ''),
                         'state_code', COALESCE(st.state_code, ''),
                         'city', COALESCE(ee.city, ''),
-                        'provider_count', COALESCE(fc.pcount, 0)
+                        'provider_count', COALESCE(pc.count, 0)
                     )
                 ) as facility_names,
                 -- For arrays: only include data from filtered facilities
@@ -1044,7 +1042,7 @@ def build_facility_comprehensive_query(
             FROM provider_entities pe
             INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pe.npi_or_ccn
             LEFT JOIN states st ON st.state_id = ee.state_id
-            LEFT JOIN facility_counts fc ON fc.facility_ccn = ee.ccn_or_npi
+            LEFT JOIN provider_counts pc ON pc.npi_or_ccn = ee.ccn_or_npi
             WHERE pe.provider_id IN ({placeholders})
             AND {data_filter_condition}
             GROUP BY pe.provider_id
@@ -1152,12 +1150,9 @@ def build_employer_comprehensive_query(
                         'name', ee.name,
                         'ccn_or_npi', ee.ccn_or_npi
                     )
-                ) as employer_names,
-                json_group_array(DISTINCT ee.city) as facility_cities,
-                json_group_array(DISTINCT st.state_name) as facility_states
+                ) as employer_names
             FROM provider_employer pem
             INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pem.npi_or_ccn
-            LEFT JOIN states st ON st.state_id = ee.state_id
             WHERE pem.provider_id IN ({placeholders})
             AND {data_filter_condition}
             GROUP BY pem.provider_id
@@ -1188,7 +1183,7 @@ def build_employer_comprehensive_query(
                         'state_name', COALESCE(pfel.facility_state_name, ''),
                         'state_code', COALESCE(pfel.facility_state_code, ''),
                         'city', COALESCE(pfel.facility_city, ''),
-                        'provider_count', COALESCE(fc.pcount, 0)
+                        'provider_count', COALESCE(pc.count, 0)
                     )
                 ) as facility_names,
                 json_group_array(DISTINCT pfel.facility_city) as facility_cities,
@@ -1196,7 +1191,7 @@ def build_employer_comprehensive_query(
                 json_group_array(DISTINCT pfel.facility_type) as facility_types,
                 json_group_array(DISTINCT pfel.facility_subtype) as facility_subtypes
             FROM pfel_new pfel
-            LEFT JOIN facility_counts fc ON fc.facility_npi_or_ccn = pfel.facility_npi_or_ccn
+            LEFT JOIN provider_counts pc ON pc.npi_or_ccn = pfel.facility_npi_or_ccn
             WHERE pfel.provider_id IN ({placeholders})
             AND EXISTS (
                 SELECT 1 FROM provider_employer_data ped 
@@ -1295,7 +1290,7 @@ def build_providers_only_comprehensive_query(npis: List[str], placeholders: str,
                         'state_name', COALESCE(st.state_name, ''),
                         'state_code', COALESCE(st.state_code, ''),
                         'city', COALESCE(ee.city, ''),
-                        'provider_count', COALESCE(fc.pcount, 0)
+                        'provider_count', COALESCE(pc.count, 0)
                     )
                 ) as facility_names,
                 json_group_array(DISTINCT ee.city) as facility_cities,
@@ -1305,7 +1300,7 @@ def build_providers_only_comprehensive_query(npis: List[str], placeholders: str,
             FROM provider_entities pe
             INNER JOIN entities_enriched ee ON ee.ccn_or_npi = pe.npi_or_ccn
             LEFT JOIN states st ON st.state_id = ee.state_id
-            LEFT JOIN facility_counts fc ON fc.facility_ccn = ee.ccn_or_npi
+            LEFT JOIN provider_counts pc ON pc.npi_or_ccn = ee.ccn_or_npi
             WHERE pe.provider_id IN ({placeholders})
             GROUP BY pe.provider_id
         ),
