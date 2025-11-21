@@ -553,6 +553,7 @@ async def get_employer_data(
             placeholders = ','.join(['?' for _ in ccns])
             main_query = f"""
                 SELECT
+                    e.id,
                     e.name,
                     e.ccn_or_npi
                 FROM entities_enriched e

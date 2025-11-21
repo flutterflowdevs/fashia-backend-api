@@ -265,7 +265,7 @@ async def get_facilities_data(
 
             # Step 1: Get total count
             count_query = f"""
-                SELECT COUNT(DISTINCT e.ccn_or_npi) 
+                SELECT COUNT(DISTINCT e.id) 
                 FROM entities_enriched e
                 LEFT JOIN states s ON s.state_id = e.state_id
                 {where_clause}
@@ -330,7 +330,7 @@ async def get_facilities_data(
                         FROM provider_entities pe
                         INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
                         INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
-                        WHERE pe.npi_or_ccn = e.ccn_or_ccn
+                        WHERE pe.npi_or_ccn = e.ccn_or_npi
                         AND {actual_combined_where}
                         ORDER BY rsc.specialty {sort_order}
                         LIMIT 1

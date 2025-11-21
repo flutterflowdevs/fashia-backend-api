@@ -25,6 +25,7 @@ class FacilityInfo(BaseModel):
     provider_count: int
 
 class EmployerResponse(BaseModel):
+    id: int
     name: str
     ccn_or_npi: str
     roles: List[str] = []
