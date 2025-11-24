@@ -214,7 +214,7 @@ async def get_facilities_data(
             # Add specialty conditions
             if specialties:
                 for specialty in specialties:
-                    combined_conditions.append("LOWER(rsc.specialty) = LOWER(?)")
+                    combined_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
                     combined_params.append(specialty)
                 logger.debug(f"Added specialty filters: {specialties}")
             
@@ -514,31 +514,111 @@ async def get_facilities_data(
                             {employer_display_order}
                         ) emp
                         """
-                
-                # Define subqueries to run in parallel
-                subqueries = [
-                    # Providers count
-                    (
-                        f"""
+                # Build providers count query - use employer WHERE clause if employers are filtered
+                if employers:
+                    if needs_provider_join:
+                        providers_count_query = f"""
+                            SELECT COUNT(DISTINCT pfel.provider_id)
+                            FROM provider_facility_employer_linked pfel
+                            INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                            INNER JOIN provider_entities pe ON pe.provider_id = pfel.provider_id
+                            INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                            WHERE pfel.facility_npi_or_ccn = ?
+                            AND {actual_employer_where}
+                        """
+                        providers_count_params = [ccn_or_npi]
+                        
+                        # Roles query with employer filter
+                        roles_query = f"""
+                            SELECT json_group_array(COALESCE(role, ''))
+                            FROM (
+                                SELECT DISTINCT rsc.role
+                                FROM provider_facility_employer_linked pfel
+                                INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                                INNER JOIN provider_entities pe ON pe.provider_id = pfel.provider_id
+                                INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                                INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                                WHERE pfel.facility_npi_or_ccn = ?
+                                AND {actual_employer_where}
+                                {role_display_order}
+                            )
+                        """
+                        roles_params = [ccn_or_npi]
+                        
+                        # Specialties query with employer filter
+                        specialties_query = f"""
+                            SELECT json_group_array(COALESCE(specialty, ''))
+                            FROM (
+                                SELECT DISTINCT rsc.specialty
+                                FROM provider_facility_employer_linked pfel
+                                INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                                INNER JOIN provider_entities pe ON pe.provider_id = pfel.provider_id
+                                INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                                INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                                WHERE pfel.facility_npi_or_ccn = ?
+                                AND {actual_employer_where}
+                                {specialty_display_order}
+                            )
+                        """
+                        specialties_params = [ccn_or_npi]
+                    else:
+                        providers_count_query = f"""
+                            SELECT COUNT(DISTINCT pfel.provider_id)
+                            FROM provider_facility_employer_linked pfel
+                            INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                            INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                            INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                            WHERE pfel.facility_npi_or_ccn = ?
+                            AND {actual_employer_where}
+                        """
+                        providers_count_params = [ccn_or_npi]
+                        
+                        # Roles query with employer filter (no provider_entities join needed)
+                        roles_query = f"""
+                            SELECT json_group_array(COALESCE(role, ''))
+                            FROM (
+                                SELECT DISTINCT rsc.role
+                                FROM provider_facility_employer_linked pfel
+                                INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                                INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                                INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                                WHERE pfel.facility_npi_or_ccn = ?
+                                AND {actual_employer_where}
+                                {role_display_order}
+                            )
+                        """
+                        roles_params = [ccn_or_npi]
+                        
+                        # Specialties query with employer filter (no provider_entities join needed)
+                        specialties_query = f"""
+                            SELECT json_group_array(COALESCE(specialty, ''))
+                            FROM (
+                                SELECT DISTINCT rsc.specialty
+                                FROM provider_facility_employer_linked pfel
+                                INNER JOIN entities_enriched emp ON emp.ccn_or_npi = pfel.employer_npi_or_ccn AND emp.is_employer = 1
+                                INNER JOIN provider_taxonomies pt ON pt.npi = pfel.provider_id
+                                INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                                WHERE pfel.facility_npi_or_ccn = ?
+                                AND {actual_employer_where}
+                                {specialty_display_order}
+                            )
+                        """
+                        specialties_params = [ccn_or_npi]
+                else:
+                    # No employer filter - use the standard queries with combined_where
+                    providers_count_query = f"""
                         SELECT COUNT(DISTINCT pe.provider_id)
                         FROM provider_entities pe
                         INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
                         INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
                         WHERE pe.npi_or_ccn = ?
                         AND {actual_combined_where}
-                        """,
-                        [ccn_or_npi],
-                        "providers_count"
-                    ),
-                    # Employers
-                    (
-                        employers_query,
-                        [ccn_or_npi],
-                        "employers"
-                    ),
-                    # Roles - ALWAYS sort alphabetically for display
-                    (
-                        f"""
+                    """
+                    providers_count_params = [ccn_or_npi]
+                    
+                    # Roles query without employer filter
+                    roles_query = f"""
                         SELECT json_group_array(COALESCE(role, ''))
                         FROM (
                             SELECT DISTINCT rsc.role
@@ -549,13 +629,11 @@ async def get_facilities_data(
                             AND {actual_combined_where}
                             {role_display_order}
                         )
-                        """,
-                        [ccn_or_npi],
-                        "roles"
-                    ),
-                    # Specialties - ALWAYS sort alphabetically for display
-                    (
-                        f"""
+                    """
+                    roles_params = [ccn_or_npi]
+                    
+                    # Specialties query without employer filter
+                    specialties_query = f"""
                         SELECT json_group_array(COALESCE(specialty, ''))
                         FROM (
                             SELECT DISTINCT rsc.specialty
@@ -566,8 +644,32 @@ async def get_facilities_data(
                             AND {actual_combined_where}
                             {specialty_display_order}
                         )
-                        """,
+                    """
+                    specialties_params = [ccn_or_npi]
+
+                subqueries = [
+                    # Providers count
+                    (
+                        providers_count_query,
+                        providers_count_params,
+                        "providers_count"
+                    ),
+                    # Employers
+                    (
+                        employers_query,
                         [ccn_or_npi],
+                        "employers"
+                    ),
+                    # Roles
+                    (
+                        roles_query,
+                        roles_params,
+                        "roles"
+                    ),
+                    # Specialties
+                    (
+                        specialties_query,
+                        specialties_params,
                         "specialties"
                     )
                 ]

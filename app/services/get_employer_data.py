@@ -142,7 +142,7 @@ async def get_employer_data(
             # Add specialty conditions
             if specialties:
                 for specialty in specialties:
-                    combined_conditions.append("LOWER(rsc.specialty) = LOWER(?)")
+                    combined_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
                     combined_params.append(specialty)
                 logger.debug(f"Added specialty filters: {specialties}")
             
