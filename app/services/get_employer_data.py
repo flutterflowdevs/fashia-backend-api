@@ -275,8 +275,8 @@ async def get_employer_data(
                 if facilities:
                     facility_conditions = []
                     for facility_name in facilities:
-                        facility_conditions.append("LOWER(loc_fac.name) LIKE ?")
-                        location_params.append(f"%{facility_name.lower()}%")
+                        facility_conditions.append("LOWER(loc_fac.name) = ?")
+                        location_params.append(facility_name.lower())
                     location_filters.append(f"({' OR '.join(facility_conditions)})")
                 
                 # Coordinate filter
