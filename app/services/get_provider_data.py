@@ -67,7 +67,7 @@ def build_role_specialty_conditions(roles: List[str], specialties: List[str]) ->
     if specialties:
         specialty_conditions = []
         for specialty in specialties:
-            specialty_conditions.append("LOWER(rsc.specialty) = LOWER(?)")
+            specialty_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
             params.append(specialty)
         conditions.append(f"({' OR '.join(specialty_conditions)})")
     
