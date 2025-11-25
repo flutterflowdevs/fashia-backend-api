@@ -56,6 +56,13 @@ async def get_facilities_data(
     """
     Fetch paginated facilities from local SQLite database.
     Facilities are entities where is_employer = 0.
+    
+    FILTERING LOGIC FOR ROLES/SPECIALTIES:
+    - Multiple roles/specialties use AND semantics at the FACILITY level
+    - Example: specialty=['Anesthesiology', 'Emergency Medicine'] means:
+      * Find facilities that have at least one provider with Anesthesiology
+      * AND at least one provider with Emergency Medicine
+      * (Can be same provider or different providers)
     """
     # Log function entry and parameters
     logger.info("🔍 get_facilities_data called")
@@ -195,7 +202,7 @@ async def get_facilities_data(
             needs_provider_join = bool(provider_first_name or provider_last_name)
             logger.debug(f"Needs provider join: {needs_provider_join}")
             
-            # Build COMBINED filter for roles, specialties, and provider_count subqueries
+            # Build COMBINED filter for provider_count and display subqueries
             combined_conditions = []
             combined_params = []
             
@@ -204,22 +211,53 @@ async def get_facilities_data(
                 combined_conditions.extend(provider_conditions)
                 combined_params.extend(provider_params)
             
-            # Add role conditions
+            # Add role conditions with OR logic for DISPLAY in subqueries (shows providers matching ANY role)
+            if roles:
+                role_or_conditions = []
+                for role in roles:
+                    role_or_conditions.append("LOWER(rsc.role) = LOWER(?)")
+                    combined_params.append(role)
+                combined_conditions.append(f"({' OR '.join(role_or_conditions)})")
+            
+            # Add specialty conditions with OR logic for DISPLAY in subqueries (shows providers matching ANY specialty)
+            if specialties:
+                specialty_or_conditions = []
+                for specialty in specialties:
+                    specialty_or_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
+                    combined_params.append(specialty)
+                combined_conditions.append(f"({' OR '.join(specialty_or_conditions)})")
+            
+            combined_where_clause = " AND ".join(combined_conditions) if combined_conditions else "1=1"
+            
             if roles:
                 for role in roles:
-                    combined_conditions.append("LOWER(rsc.role) = LOWER(?)")
-                    combined_params.append(role)
-                logger.debug(f"Added role filters: {roles}")
+                    filters.append(f"""EXISTS (
+                        SELECT 1 FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = e.ccn_or_npi
+                        AND LOWER(rsc.role) = LOWER(?)
+                        {" AND " + " AND ".join(provider_conditions) if provider_conditions else ""}
+                    )""")
+                    entity_params.append(role)
+                    if provider_conditions:
+                        entity_params.extend(provider_params)
+                logger.debug(f"Added role filters (facility-level AND): {roles}")
             
-            # Add specialty conditions
             if specialties:
                 for specialty in specialties:
-                    combined_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
-                    combined_params.append(specialty)
-                logger.debug(f"Added specialty filters: {specialties}")
-            
-            # Combined WHERE clause for roles, specialties, and provider_count subqueries
-            combined_where_clause = " AND ".join(combined_conditions) if combined_conditions else "1=1"
+                    filters.append(f"""EXISTS (
+                        SELECT 1 FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = e.ccn_or_npi
+                        AND LOWER(TRIM(rsc.specialty)) = LOWER(?)
+                        {" AND " + " AND ".join(provider_conditions) if provider_conditions else ""}
+                    )""")
+                    entity_params.append(specialty)
+                    if provider_conditions:
+                        entity_params.extend(provider_params)
+                logger.debug(f"Added specialty filters (facility-level AND): {specialties}")
             
             # For employer subquery, use the combined filter PLUS employer name filter
             employer_combined_conditions = combined_conditions.copy()
@@ -234,9 +272,7 @@ async def get_facilities_data(
                 logger.debug(f"Added employer filters: {employers}")
             
             employer_where_clause = " AND ".join(employer_combined_conditions) if employer_combined_conditions else "1=1"
-            
-            # Combine all provider-related conditions for the main filter
-            if combined_conditions:
+            if combined_conditions and not roles and not specialties:
                 combined_where = " AND ".join(combined_conditions)
                 filters.append(f"""EXISTS (
                     SELECT 1 FROM provider_entities pe
@@ -416,7 +452,7 @@ async def get_facilities_data(
             ccn_query_time = asyncio.get_event_loop().time() - ccn_start_time
 
             logger.info(f"✅ Sorted CCNs query executed in {ccn_query_time:.2f}s, found {len(ccns)} facilities")
-
+            total_pages = (total_count + per_page - 1) // per_page
             if not ccns:
                 logger.info("❌ No results found after pagination")
                 return PaginatedEntityResponse(
@@ -699,8 +735,6 @@ async def get_facilities_data(
                 if (i + 1) % 10 == 0:  # Log progress every 10 entities
                     logger.info(f"📦 Processed {i + 1}/{len(basic_entities)} entities, last batch subqueries took {subquery_time:.2f}s")
 
-            total_pages = (total_count + per_page - 1) // per_page
-
             total_processing_time = asyncio.get_event_loop().time() - count_start
             logger.info(f"🎉 Query completed successfully in {total_processing_time:.2f}s")
             logger.info(f"📊 Final result: {len(entities)} entities, {total_count} total, {total_pages} pages")
@@ -721,3 +755,4 @@ async def get_facilities_data(
         logger.error(f"📁 Current working directory: {os.getcwd()}")
         logger.error(f"🔍 Database path environment: {os.getenv('DATABASE_PATH', 'Not set')}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
