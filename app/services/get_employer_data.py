@@ -1,3 +1,5 @@
+ 
+
 import os
 import logging
 from typing import List, Optional
@@ -425,7 +427,7 @@ async def get_employer_data(
             actual_combined_where_facility = actual_combined_where.replace('pe.', 'pe4.').replace('pt.', 'pt4.').replace('rsc.', 'rsc4.')
             actual_combined_where_sort = actual_combined_where.replace('pe.', 'pe_sort.').replace('pt.', 'pt_sort.').replace('rsc.', 'rsc_sort.')
 
-            # Build sorting logic - ensure all sort subqueries apply consistent filters
+            # Build sorting logic - FIXED: ensure all queries use consistent state join alias
             if sort_by in ["role", "specialty"]:
                 sort_field = "role" if sort_by == "role" else "specialty"
                 # Apply both provider filters AND location filters when sorting
@@ -451,7 +453,7 @@ async def get_employer_data(
             elif sort_by in ["city", "state", "type", "subtype", "facility"]:
                 sort_field_map = {
                     "city": "fac_sort.city",
-                    "state": "fac_state_sort.state_name", 
+                    "state": "fac_sort_state.state_name",  # FIXED: Use consistent alias
                     "type": "fac_sort.type",
                     "subtype": "fac_sort.subtype",
                     "facility": "fac_sort.name"
@@ -461,32 +463,32 @@ async def get_employer_data(
                 # Apply both provider filters AND location filters when sorting by facility attributes
                 if combined_conditions:
                     # If we have provider filters, only consider facilities with matching providers
-                    # Need to include state join for all queries to avoid SQL errors
                     sort_subquery = f"""
                         SELECT {sort_field}
                         FROM provider_facility_employer_linked pfel_sort
                         INNER JOIN entities_enriched fac_sort ON fac_sort.ccn_or_npi = pfel_sort.facility_npi_or_ccn
-                        LEFT JOIN states fac_state_sort ON fac_state_sort.state_id = fac_sort.state_id
+                        LEFT JOIN states fac_sort_state ON fac_sort_state.state_id = fac_sort.state_id
                         INNER JOIN provider_employer pe_sort ON pe_sort.provider_id = pfel_sort.provider_id
                         INNER JOIN provider_taxonomies pt_sort ON pt_sort.npi = pe_sort.provider_id
                         INNER JOIN roles_specialties_classification rsc_sort ON rsc_sort.nucc_code = pt_sort.nucc_code
                         WHERE pfel_sort.employer_npi_or_ccn = e.ccn_or_npi
                         AND {actual_combined_where_sort}
-                        AND ({actual_facility_where.replace('facility', 'fac_sort').replace('facility_state', 'fac_state_sort')})
+                        AND ({actual_facility_where.replace('facility', 'fac_sort').replace('facility_state', 'fac_sort_state')})
                         AND {sort_field} IS NOT NULL
                         ORDER BY {sort_field} {sort_order}
                         LIMIT 1
                     """
                 else:
                     # No provider filters, just apply location filters
-                    # Need to include state join for all queries to avoid SQL errors
+                    # Must still include state join even when there are no provider filters
+                    facility_where_for_sort = actual_facility_where.replace('facility', 'fac_sort').replace('facility_state', 'fac_sort_state')
                     sort_subquery = f"""
                         SELECT {sort_field}
                         FROM provider_facility_employer_linked pfel_sort
                         INNER JOIN entities_enriched fac_sort ON fac_sort.ccn_or_npi = pfel_sort.facility_npi_or_ccn
-                        LEFT JOIN states fac_state_sort ON fac_state_sort.state_id = fac_sort.state_id
+                        LEFT JOIN states fac_sort_state ON fac_sort_state.state_id = fac_sort.state_id
                         WHERE pfel_sort.employer_npi_or_ccn = e.ccn_or_npi
-                        AND ({actual_facility_where.replace('facility', 'fac_sort').replace('facility_state', 'fac_state_sort')})
+                        AND {facility_where_for_sort}
                         AND {sort_field} IS NOT NULL
                         ORDER BY {sort_field} {sort_order}
                         LIMIT 1
@@ -588,33 +590,62 @@ async def get_employer_data(
                 employer_ccn = employer['ccn_or_npi']
                 
                 # Determine sorting order for facilities and related arrays based on sort_by
-                if sort_by == "city":
-                    facilities_order = f"ORDER BY facility.city {sort_order}, facility.name ASC"
-                    cities_order = f"ORDER BY facility.city {sort_order}"
-                elif sort_by == "state":
-                    facilities_order = f"ORDER BY facility_state.state_name {sort_order}, facility.name ASC"
-                    states_order = f"ORDER BY facility_state.state_name {sort_order}"
-                elif sort_by == "type":
-                    facilities_order = f"ORDER BY facility.type {sort_order}, facility.name ASC"
-                    types_order = f"ORDER BY facility.type {sort_order}, facility.subtype ASC"
-                elif sort_by == "subtype":
-                    facilities_order = f"ORDER BY facility.subtype {sort_order}, facility.name ASC"
-                    types_order = f"ORDER BY facility.subtype {sort_order}, facility.type ASC"
-                elif sort_by == "facility":
-                    facilities_order = f"ORDER BY facility.name {sort_order}"
-                else:
-                    # Default sorting for facilities and arrays
+                if sort_by == "role":
+                    roles_order = f"ORDER BY rsc.role {sort_order}"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
                     facilities_order = "ORDER BY facility.name ASC"
                     cities_order = "ORDER BY facility.city ASC"
                     states_order = "ORDER BY facility_state.state_name ASC"
                     types_order = "ORDER BY facility.type ASC, facility.subtype ASC"
-                
-                # Set default orderings if not set
-                if sort_by != "city":
+                elif sort_by == "specialty":
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = f"ORDER BY rsc.specialty {sort_order}"
+                    facilities_order = "ORDER BY facility.name ASC"
                     cities_order = "ORDER BY facility.city ASC"
-                if sort_by not in ["state"]:
                     states_order = "ORDER BY facility_state.state_name ASC"
-                if sort_by not in ["type", "subtype"]:
+                    types_order = "ORDER BY facility.type ASC, facility.subtype ASC"
+                elif sort_by == "city":
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
+                    facilities_order = f"ORDER BY facility.city {sort_order}, facility.name ASC"
+                    cities_order = f"ORDER BY facility.city {sort_order}"
+                    states_order = "ORDER BY facility_state.state_name ASC"
+                    types_order = "ORDER BY facility.type ASC, facility.subtype ASC"
+                elif sort_by == "state":
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
+                    facilities_order = f"ORDER BY facility_state.state_name {sort_order}, facility.name ASC"
+                    cities_order = "ORDER BY facility.city ASC"
+                    states_order = f"ORDER BY facility_state.state_name {sort_order}"
+                    types_order = "ORDER BY facility.type ASC, facility.subtype ASC"
+                elif sort_by == "type":
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
+                    facilities_order = f"ORDER BY facility.type {sort_order}, facility.name ASC"
+                    cities_order = "ORDER BY facility.city ASC"
+                    states_order = "ORDER BY facility_state.state_name ASC"
+                    types_order = f"ORDER BY facility.type {sort_order}, facility.subtype ASC"
+                elif sort_by == "subtype":
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
+                    facilities_order = f"ORDER BY facility.subtype {sort_order}, facility.name ASC"
+                    cities_order = "ORDER BY facility.city ASC"
+                    states_order = "ORDER BY facility_state.state_name ASC"
+                    types_order = f"ORDER BY facility.subtype {sort_order}, facility.type ASC"
+                elif sort_by == "facility":
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
+                    facilities_order = f"ORDER BY facility.name {sort_order}"
+                    cities_order = "ORDER BY facility.city ASC"
+                    states_order = "ORDER BY facility_state.state_name ASC"
+                    types_order = "ORDER BY facility.type ASC, facility.subtype ASC"
+                else:
+                    # Default sorting for all arrays
+                    roles_order = "ORDER BY rsc.role ASC"
+                    specialties_order = "ORDER BY rsc.specialty ASC"
+                    facilities_order = "ORDER BY facility.name ASC"
+                    cities_order = "ORDER BY facility.city ASC"
+                    states_order = "ORDER BY facility_state.state_name ASC"
                     types_order = "ORDER BY facility.type ASC, facility.subtype ASC"
                 
                 # Define subqueries to run in parallel
@@ -651,7 +682,7 @@ async def get_employer_data(
                             WHERE pfel.employer_npi_or_ccn = ?
                             AND {actual_combined_where}
                             AND ({facility_where_clause.replace('facility', 'fac_filter').replace('facility_state', 'fac_filter_state')})
-                            ORDER BY rsc.role ASC
+                            {roles_order}
                         )
                         """,
                         [employer_ccn] + facility_params,
@@ -672,7 +703,7 @@ async def get_employer_data(
                             WHERE pfel.employer_npi_or_ccn = ?
                             AND {actual_combined_where}
                             AND ({facility_where_clause.replace('facility', 'fac_filter').replace('facility_state', 'fac_filter_state')})
-                            ORDER BY rsc.specialty ASC
+                            {specialties_order}
                         )
                         """,
                         [employer_ccn] + facility_params,
