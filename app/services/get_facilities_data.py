@@ -184,7 +184,7 @@ async def get_facilities_data(
             # Build provider filter conditions and parameters separately
             provider_conditions = []
             provider_params = []
-            
+
             if provider_first_name and provider_last_name:
                 provider_conditions.append("(LOWER(pe.first_name) = LOWER(?) AND LOWER(pe.last_name) = LOWER(?))")
                 provider_params.extend([provider_first_name, provider_last_name])
@@ -197,20 +197,142 @@ async def get_facilities_data(
                 provider_conditions.append("LOWER(pe.last_name) = LOWER(?)")
                 provider_params.append(provider_last_name)
                 logger.debug(f"Added provider last name filter: {provider_last_name}")
-            
+
             # Determine if we need provider_entities join for employer query
             needs_provider_join = bool(provider_first_name or provider_last_name)
             logger.debug(f"Needs provider join: {needs_provider_join}")
-            
+
             # Build COMBINED filter for provider_count and display subqueries
             combined_conditions = []
             combined_params = []
-            
+
             # Add provider name conditions
             if provider_conditions:
                 combined_conditions.extend(provider_conditions)
                 combined_params.extend(provider_params)
-            
+
+            # CRITICAL FIX: When both roles AND specialties are provided, we need to ensure
+            # at least ONE provider has at least one role AND at least one specialty
+            if roles and specialties:
+                # Build the facility-level filter: must have provider(s) with the required role/specialty combination
+                filters.append(f"""EXISTS (
+                    SELECT 1 FROM provider_entities pe
+                    INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                    INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                    WHERE pe.npi_or_ccn = e.ccn_or_npi
+                    AND pe.provider_id IN (
+                        -- Provider must have at least one of the required roles
+                        SELECT pt_role.npi
+                        FROM provider_entities pe_role
+                        INNER JOIN provider_taxonomies pt_role ON pt_role.npi = pe_role.provider_id
+                        INNER JOIN roles_specialties_classification rsc_role ON rsc_role.nucc_code = pt_role.nucc_code
+                        WHERE pe_role.npi_or_ccn = e.ccn_or_npi
+                        AND ({' OR '.join(['LOWER(rsc_role.role) = LOWER(?)' for _ in roles])})
+                        {" AND " + " AND ".join(provider_conditions) if provider_conditions else ""}
+                    )
+                    AND pe.provider_id IN (
+                        -- AND provider must have at least one of the required specialties
+                        SELECT pt_spec.npi
+                        FROM provider_entities pe_spec
+                        INNER JOIN provider_taxonomies pt_spec ON pt_spec.npi = pe_spec.provider_id
+                        INNER JOIN roles_specialties_classification rsc_spec ON rsc_spec.nucc_code = pt_spec.nucc_code
+                        WHERE pe_spec.npi_or_ccn = e.ccn_or_npi
+                        AND ({' OR '.join(['LOWER(TRIM(rsc_spec.specialty)) = LOWER(?)' for _ in specialties])})
+                        {" AND " + " AND ".join(provider_conditions) if provider_conditions else ""}
+                    )
+                )""")
+                
+                # Add role parameters
+                for role in roles:
+                    entity_params.append(role)
+                
+                # Add provider params for role check if needed
+                if provider_conditions:
+                    entity_params.extend(provider_params)
+                
+                # Add specialty parameters
+                for specialty in specialties:
+                    entity_params.append(specialty)
+                
+                # Add provider params for specialty check if needed
+                if provider_conditions:
+                    entity_params.extend(provider_params)
+                
+                logger.debug(f"Added combined role+specialty filter (facility must have provider with BOTH)")
+                
+                # For display queries, show ALL roles and specialties from matching providers
+                # Build combined_where with OR logic for display
+                role_or_conditions = []
+                for role in roles:
+                    role_or_conditions.append("LOWER(rsc.role) = LOWER(?)")
+                    combined_params.append(role)
+                combined_conditions.append(f"({' OR '.join(role_or_conditions)})")
+                
+                specialty_or_conditions = []
+                for specialty in specialties:
+                    specialty_or_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
+                    combined_params.append(specialty)
+                combined_conditions.append(f"({' OR '.join(specialty_or_conditions)})")
+                
+            elif roles:
+                # Only roles filter - facility must have at least one provider with at least one of these roles
+                for role in roles:
+                    filters.append(f"""EXISTS (
+                        SELECT 1 FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = e.ccn_or_npi
+                        AND LOWER(rsc.role) = LOWER(?)
+                        {" AND " + " AND ".join(provider_conditions) if provider_conditions else ""}
+                    )""")
+                    entity_params.append(role)
+                    if provider_conditions:
+                        entity_params.extend(provider_params)
+                logger.debug(f"Added role filters (facility-level AND): {roles}")
+                
+                # For display queries
+                role_or_conditions = []
+                for role in roles:
+                    role_or_conditions.append("LOWER(rsc.role) = LOWER(?)")
+                    combined_params.append(role)
+                combined_conditions.append(f"({' OR '.join(role_or_conditions)})")
+
+            elif specialties:
+                # Only specialties filter - facility must have at least one provider with at least one of these specialties
+                for specialty in specialties:
+                    filters.append(f"""EXISTS (
+                        SELECT 1 FROM provider_entities pe
+                        INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                        INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                        WHERE pe.npi_or_ccn = e.ccn_or_npi
+                        AND LOWER(TRIM(rsc.specialty)) = LOWER(?)
+                        {" AND " + " AND ".join(provider_conditions) if provider_conditions else ""}
+                    )""")
+                    entity_params.append(specialty)
+                    if provider_conditions:
+                        entity_params.extend(provider_params)
+                logger.debug(f"Added specialty filters (facility-level AND): {specialties}")
+                
+                # For display queries
+                specialty_or_conditions = []
+                for specialty in specialties:
+                    specialty_or_conditions.append("LOWER(TRIM(rsc.specialty)) = LOWER(?)")
+                    combined_params.append(specialty)
+                combined_conditions.append(f"({' OR '.join(specialty_or_conditions)})")
+
+            combined_where_clause = " AND ".join(combined_conditions) if combined_conditions else "1=1"
+
+            # Handle case where only provider name is provided (no roles/specialties)
+            if combined_conditions and not roles and not specialties:
+                combined_where = " AND ".join(combined_conditions)
+                filters.append(f"""EXISTS (
+                    SELECT 1 FROM provider_entities pe
+                    INNER JOIN provider_taxonomies pt ON pt.npi = pe.provider_id
+                    INNER JOIN roles_specialties_classification rsc ON rsc.nucc_code = pt.nucc_code
+                    WHERE pe.npi_or_ccn = e.ccn_or_npi
+                    AND ({combined_where})
+                )""")
+                entity_params.extend(combined_params)
             # Add role conditions with OR logic for DISPLAY in subqueries (shows providers matching ANY role)
             if roles:
                 role_or_conditions = []
